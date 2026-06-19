@@ -5,7 +5,13 @@ import {
   isAnthropicCompatibleProvider,
   isOpenAICompatibleProvider,
 } from "@/shared/constants/providers";
-import { getProviderConnections, getCombos, getCustomModels, getModelAliases } from "@/lib/localDb";
+import {
+  getProviderConnections,
+  getCombos,
+  getCustomModels,
+  getModelAliases,
+  getAllSyncedAvailableModels,
+} from "@/lib/localDb";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { resolveQoderModels } from "open-sse/services/qoderModels.js";
@@ -183,6 +189,13 @@ export async function buildModelsList(kindFilter) {
     console.log("Could not fetch model aliases");
   }
 
+  let syncedAvailableModels = {};
+  try {
+    syncedAvailableModels = await getAllSyncedAvailableModels();
+  } catch (e) {
+    console.log("Could not fetch synced models");
+  }
+
   let disabledByAlias = {};
   try {
     disabledByAlias = await getDisabledModels();
@@ -260,6 +273,9 @@ export async function buildModelsList(kindFilter) {
         || staticAlias
       ).trim();
       const providerModels = PROVIDER_MODELS[staticAlias] || [];
+      const syncedModels = Array.isArray(syncedAvailableModels[providerId])
+        ? syncedAvailableModels[providerId]
+        : [];
       const enabledModels = conn?.providerSpecificData?.enabledModels;
       const hasExplicitEnabledModels =
         Array.isArray(enabledModels) && enabledModels.length > 0;
@@ -270,6 +286,14 @@ export async function buildModelsList(kindFilter) {
       const staticModelKindById = new Map(
         providerModels.map((m) => [m.id, modelKind(m)])
       );
+      const syncedModelKindById = new Map(
+        syncedModels
+          .map((m) => {
+            const id = m?.id || m?.name || m?.model;
+            return typeof id === "string" ? [id, modelKind(m)] : null;
+          })
+          .filter(Boolean)
+      );
 
       let rawModelIds = hasExplicitEnabledModels
         ? Array.from(
@@ -279,7 +303,11 @@ export async function buildModelsList(kindFilter) {
               ),
             ),
           )
-        : providerModels.map((model) => model.id);
+        : (
+            syncedModels.length > 0
+              ? syncedModels.map((model) => model.id || model.name || model.model)
+              : providerModels.map((model) => model.id)
+          );
 
       if (isCompatibleProvider && rawModelIds.length === 0 && !UPSTREAM_CONNECTION_RE.test(providerId)) {
         rawModelIds = await fetchCompatibleModelIds(conn);
@@ -289,7 +317,7 @@ export async function buildModelsList(kindFilter) {
       // -thinking/-agentic variants per account). On failure, fall back to
       // whatever rawModelIds already holds.
       const liveResolver = LIVE_MODEL_RESOLVERS[providerId];
-      if (liveResolver && !hasExplicitEnabledModels) {
+      if (liveResolver && !hasExplicitEnabledModels && syncedModels.length === 0) {
         try {
           const live = await liveResolver(conn);
           if (live?.models?.length) {
@@ -361,7 +389,7 @@ export async function buildModelsList(kindFilter) {
       for (const modelId of mergedModelIds) {
         // Resolve kind: prefer static/custom metadata, otherwise infer from ID heuristics
         const customKind = customModelKindById.get(modelId);
-        const kind = staticModelKindById.get(modelId) || customKind || inferKindFromUnknownModelId(modelId);
+        const kind = staticModelKindById.get(modelId) || syncedModelKindById.get(modelId) || customKind || inferKindFromUnknownModelId(modelId);
         // imageToText custom models stay in the LLM list (vision-capable chat models)
         const allowAsLlm = kind === "imageToText" && kindFilter.includes(LLM_KIND);
         if (!kindFilter.includes(kind) && !allowAsLlm) continue;

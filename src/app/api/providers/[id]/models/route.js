@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { getProviderConnectionById } from "@/models";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
-import { GEMINI_CONFIG } from "@/lib/oauth/constants/oauth";
+import { ANTIGRAVITY_CONFIG, GEMINI_CONFIG } from "@/lib/oauth/constants/oauth";
 import { refreshGoogleToken, updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveOllamaLocalHost } from "open-sse/config/providers.js";
+import { getModelsByProviderId } from "open-sse/config/providerModels.js";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { resolveQoderModels } from "open-sse/services/qoderModels.js";
 
@@ -57,6 +58,21 @@ const appendCodexReviewModels = (models) => models.flatMap((model) => {
 });
 
 const parseCodexModels = (data) => appendCodexReviewModels(parseOpenAIStyleModels(data));
+
+const getStaticModelFallback = (provider, warning) => ({
+  models: getModelsByProviderId(provider)
+    .map((model) => {
+      const id = model?.id || model?.name || model?.model;
+      if (!id) return null;
+      return {
+        ...model,
+        id,
+        name: model?.name || model?.displayName || model?.display_name || id,
+      };
+    })
+    .filter(Boolean),
+  ...(warning ? { warning } : {}),
+});
 
 const createOpenAIModelsConfig = (url) => ({
   url,
@@ -154,13 +170,38 @@ const PROVIDER_MODELS_CONFIG = {
     parseResponse: parseCodexModels
   },
   antigravity: {
-    url: "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:models",
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    authHeader: "Authorization",
-    authPrefix: "Bearer ",
-    body: {},
-    parseResponse: (data) => data.models || []
+    customResolver: async (connection) => {
+      const result = await buildOAuthResolver({
+        refreshFn: (conn) => refreshGoogleToken(conn.refreshToken, ANTIGRAVITY_CONFIG.clientId, ANTIGRAVITY_CONFIG.clientSecret),
+        fetchFn: (token, conn) => {
+          const projectId = conn.projectId || conn.providerSpecificData?.projectId;
+          const body = projectId ? { project: projectId } : {};
+          return fetch(GEMINI_CLI_MODELS_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${token}`,
+              "User-Agent": ANTIGRAVITY_CONFIG.loadCodeAssistUserAgent || "google-api-nodejs-client/9.15.1",
+              "X-Goog-Api-Client": ANTIGRAVITY_CONFIG.loadCodeAssistApiClient || "google-cloud-sdk vscode_cloudshelleditor/0.1",
+              "X-Client-Name": "antigravity",
+              "X-Client-Version": "1.107.0",
+              "x-request-source": "local"
+            },
+            body: JSON.stringify(body)
+          });
+        },
+        parseFn: parseGeminiCliModels,
+        errorLabel: "Failed to fetch Antigravity models"
+      })(connection);
+
+      if (result.error) return result;
+      if (result.models?.length) return result;
+
+      return getStaticModelFallback(
+        "antigravity",
+        result.warning || "Antigravity returned no models; falling back to static catalog."
+      );
+    }
   },
   github: {
     url: "https://api.githubcopilot.com/models",
@@ -362,21 +403,13 @@ const PROVIDER_MODELS_CONFIG = {
 };
 
 /**
- * GET /api/providers/[id]/models - Get models list from provider
+ * Fetch model list for a provider connection.
  */
-export async function GET(request, { params }) {
-  try {
-    const { id } = await params;
-    const connection = await getProviderConnectionById(id);
-
-    if (!connection) {
-      return NextResponse.json({ error: "Connection not found" }, { status: 404 });
-    }
-
+export async function fetchModelsForConnection(connection) {
     if (isOpenAICompatibleProvider(connection.provider)) {
       const baseUrl = connection.providerSpecificData?.baseUrl;
       if (!baseUrl) {
-        return NextResponse.json({ error: "No base URL configured for OpenAI compatible provider" }, { status: 400 });
+        return { error: "No base URL configured for OpenAI compatible provider", status: 400 };
       }
       const url = `${baseUrl.replace(/\/$/, "")}/models`;
       const response = await fetch(url, {
@@ -390,26 +423,23 @@ export async function GET(request, { params }) {
       if (!response.ok) {
         const errorText = await response.text();
         console.log(`Error fetching models from ${connection.provider}:`, errorText);
-        return NextResponse.json(
-          { error: `Failed to fetch models: ${response.status}` },
-          { status: response.status }
-        );
+        return { error: `Failed to fetch models: ${response.status}`, status: response.status };
       }
 
       const data = await response.json();
       const models = data.data || data.models || [];
 
-      return NextResponse.json({
+      return {
         provider: connection.provider,
         connectionId: connection.id,
         models
-      });
+      };
     }
 
     if (isAnthropicCompatibleProvider(connection.provider)) {
       let baseUrl = connection.providerSpecificData?.baseUrl;
       if (!baseUrl) {
-        return NextResponse.json({ error: "No base URL configured for Anthropic compatible provider" }, { status: 400 });
+        return { error: "No base URL configured for Anthropic compatible provider", status: 400 };
       }
 
       baseUrl = baseUrl.replace(/\/$/, "");
@@ -431,48 +461,45 @@ export async function GET(request, { params }) {
       if (!response.ok) {
         const errorText = await response.text();
         console.log(`Error fetching models from ${connection.provider}:`, errorText);
-        return NextResponse.json(
-          { error: `Failed to fetch models: ${response.status}` },
-          { status: response.status }
-        );
+        return { error: `Failed to fetch models: ${response.status}`, status: response.status };
       }
 
       const data = await response.json();
       const models = data.data || data.models || [];
 
-      return NextResponse.json({
+      return {
         provider: connection.provider,
         connectionId: connection.id,
         models
-      });
+      };
     }
 
     const config = PROVIDER_MODELS_CONFIG[connection.provider];
     if (!config) {
-      return NextResponse.json(
-        { error: `Provider ${connection.provider} does not support models listing` },
-        { status: 400 }
-      );
+      return {
+        error: `Provider ${connection.provider} does not support models listing`,
+        status: 400
+      };
     }
 
     // Config-driven custom resolver path (OAuth refresh, non-OpenAI shape, etc.)
     if (typeof config.customResolver === "function") {
       const result = await config.customResolver(connection);
       if (result.error) {
-        return NextResponse.json({ error: result.error }, { status: result.status || 500 });
+        return { error: result.error, status: result.status || 500 };
       }
-      return NextResponse.json({
+      return {
         provider: connection.provider,
         connectionId: connection.id,
         models: result.models,
         ...(result.warning ? { warning: result.warning } : {})
-      });
+      };
     }
 
     // Get auth token
     const token = connection.providerSpecificData?.copilotToken || connection.accessToken || connection.apiKey;
     if (!token) {
-      return NextResponse.json({ error: "No valid token found" }, { status: 401 });
+      return { error: "No valid token found", status: 401 };
     }
 
     // Build request URL
@@ -505,20 +532,36 @@ export async function GET(request, { params }) {
     if (!response.ok) {
       const errorText = await response.text();
       console.log(`Error fetching models from ${connection.provider}:`, errorText);
-      return NextResponse.json(
-        { error: `Failed to fetch models: ${response.status}` },
-        { status: response.status }
-      );
+      return { error: `Failed to fetch models: ${response.status}`, status: response.status };
     }
 
     const data = await response.json();
     const models = config.parseResponse(data);
 
-    return NextResponse.json({
+    return {
       provider: connection.provider,
       connectionId: connection.id,
       models
-    });
+    };
+}
+
+/**
+ * GET /api/providers/[id]/models - Get models list from provider
+ */
+export async function GET(request, { params }) {
+  try {
+    const { id } = await params;
+    const connection = await getProviderConnectionById(id);
+
+    if (!connection) {
+      return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+    }
+
+    const result = await fetchModelsForConnection(connection);
+    if (result.error) {
+      return NextResponse.json({ error: result.error }, { status: result.status || 500 });
+    }
+    return NextResponse.json(result);
   } catch (error) {
     console.log("Error fetching provider models:", error);
     return NextResponse.json({ error: "Failed to fetch models" }, { status: 500 });

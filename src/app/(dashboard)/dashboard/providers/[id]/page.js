@@ -60,6 +60,7 @@ export default function ProviderDetailPage() {
   const [thinkingMode, setThinkingMode] = useState("auto");
   const [autoPing, setAutoPing] = useState({ enabled: false, connections: {} });
   const [suggestedModels, setSuggestedModels] = useState([]);
+  const [syncedModels, setSyncedModels] = useState([]);
   const [kiloFreeModels, setKiloFreeModels] = useState([]);
   const [disabledModelIds, setDisabledModelIds] = useState([]);
   const [confirmState, setConfirmState] = useState(null);
@@ -255,13 +256,18 @@ export default function ProviderDetailPage() {
         fetch("/api/proxy-pools?isActive=true", { cache: "no-store" }),
         fetch("/api/settings", { cache: "no-store" }),
       ]);
+      const syncedRes = await fetch(`/api/synced-available-models?provider=${encodeURIComponent(providerId)}`, { cache: "no-store" });
       const connectionsData = await connectionsRes.json();
       const nodesData = await nodesRes.json();
       const proxyPoolsData = await proxyPoolsRes.json();
       const settingsData = settingsRes.ok ? await settingsRes.json() : {};
+      const syncedData = syncedRes.ok ? await syncedRes.json() : {};
       if (connectionsRes.ok) {
         const filtered = (connectionsData.connections || []).filter(c => c.provider === providerId);
         setConnections(filtered);
+      }
+      if (syncedRes.ok) {
+        setSyncedModels(Array.isArray(syncedData.models) ? syncedData.models : []);
       }
       if (proxyPoolsRes.ok) {
         setProxyPools(proxyPoolsData.proxyPools || []);
@@ -975,6 +981,7 @@ export default function ProviderDetailPage() {
           onAddCustomModel={(modelId) => handleAddCustomModel(modelId, "llm", providerStorageAlias)}
           onDeleteCustomModel={(modelId) => handleDeleteCustomModel(modelId, "llm", providerStorageAlias)}
           connections={connections}
+          syncedModels={syncedModels}
           isAnthropic={isAnthropicCompatible}
         />
       );

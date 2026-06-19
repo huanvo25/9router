@@ -116,12 +116,29 @@ async function flushDNS(sudoPassword) {
 function checkDNSEntry(host = null) {
   try {
     const hostsContent = fs.readFileSync(HOSTS_FILE, "utf8");
-    if (host) return hostsContent.includes(host);
+    if (host) {
+      if (IS_WIN) return hostsContent.includes(host);
+      const escaped = host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const hasIpv4 = new RegExp(`^\\s*127\\.0\\.0\\.1\\s+${escaped}(?:\\s|$)`, "m").test(hostsContent);
+      const hasIpv6 = new RegExp(`^\\s*::1\\s+${escaped}(?:\\s|$)`, "m").test(hostsContent);
+      return hasIpv4 && hasIpv6;
+    }
     // Legacy: check all antigravity hosts (backward compat)
     return TOOL_HOSTS.antigravity.every(h => hostsContent.includes(h));
   } catch {
     return false;
   }
+}
+
+function missingHostEntries(content, host) {
+  if (IS_WIN) return content.includes(host) ? [] : [`127.0.0.1 ${host}`];
+  const escaped = host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const hasIpv4 = new RegExp(`^\\s*127\\.0\\.0\\.1\\s+${escaped}(?:\\s|$)`, "m").test(content);
+  const hasIpv6 = new RegExp(`^\\s*::1\\s+${escaped}(?:\\s|$)`, "m").test(content);
+  return [
+    !hasIpv4 && `127.0.0.1 ${host}`,
+    !hasIpv6 && `::1 ${host}`,
+  ].filter(Boolean);
 }
 
 /**
@@ -132,7 +149,7 @@ function checkAllDNSStatus() {
     const hostsContent = fs.readFileSync(HOSTS_FILE, "utf8");
     const result = {};
     for (const [tool, hosts] of Object.entries(TOOL_HOSTS)) {
-      result[tool] = hosts.every(h => hostsContent.includes(h));
+      result[tool] = hosts.every(h => missingHostEntries(hostsContent, h).length === 0);
     }
     return result;
   } catch {
@@ -147,7 +164,8 @@ async function addDNSEntry(tool, sudoPassword) {
   const hosts = TOOL_HOSTS[tool];
   if (!hosts) throw new Error(`Unknown tool: ${tool}`);
 
-  const entriesToAdd = hosts.filter(h => !checkDNSEntry(h));
+  const current = fs.readFileSync(HOSTS_FILE, "utf8");
+  const entriesToAdd = hosts.flatMap(h => missingHostEntries(current, h));
   if (entriesToAdd.length === 0) {
     log(`🌐 DNS ${tool}: already active`);
     return;
@@ -156,16 +174,14 @@ async function addDNSEntry(tool, sudoPassword) {
   try {
     if (IS_WIN) {
       // Read → trim → append → atomic write (Node-side, no CLI size limit)
-      const current = fs.readFileSync(HOSTS_FILE, "utf8");
       const trimmed = current.replace(/[\r\n\s]+$/g, "");
-      const toAppend = entriesToAdd.map(h => `127.0.0.1 ${h}`).join("\r\n");
+      const toAppend = entriesToAdd.join("\r\n");
       const next = `${trimmed}\r\n${toAppend}\r\n`;
       atomicWriteHostsWin(HOSTS_FILE, current, next);
       await runElevatedPowerShell("ipconfig /flushdns | Out-Null");
     } else {
-      const current = fs.readFileSync(HOSTS_FILE, "utf8");
       const trimmed = current.replace(/[\r\n\s]+$/g, "");
-      const toAppend = entriesToAdd.map(h => `127.0.0.1 ${h}`).join("\n");
+      const toAppend = entriesToAdd.join("\n");
       const next = `${trimmed}\n${toAppend}\n`;
       // Use tee via sudo to overwrite atomically — escape single quotes in content
       const escaped = next.replace(/'/g, "'\\''");

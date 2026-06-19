@@ -104,6 +104,8 @@ export default function ProvidersPage() {
     useState(false);
   const [testingMode, setTestingMode] = useState(null);
   const [testResults, setTestResults] = useState(null);
+  const [syncingProviderId, setSyncingProviderId] = useState(null);
+  const [autoSyncingProviderId, setAutoSyncingProviderId] = useState(null);
   const notify = useNotificationStore();
   const searchQuery = useHeaderSearchStore((s) => s.query);
   const registerSearch = useHeaderSearchStore((s) => s.register);
@@ -209,6 +211,38 @@ export default function ProvidersPage() {
     return { connected, error, total, errorCode, errorTime, allDisabled };
   };
 
+  const getProviderConnections = (providerId) =>
+    connections.filter((connection) => connection.provider === providerId);
+
+  const getProviderModelSyncState = (providerId) => {
+    const providerConnections = getProviderConnections(providerId);
+    const activeConnection =
+      providerConnections.find((connection) => connection.isActive !== false) ||
+      providerConnections[0] ||
+      null;
+    const autoSync = providerConnections.some(
+      (connection) => connection.providerSpecificData?.autoSync !== false,
+    );
+    const lastSyncedAt = providerConnections
+      .map((connection) => connection.providerSpecificData?.lastModelSyncAt)
+      .filter(Boolean)
+      .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0];
+    const lastError = providerConnections.find(
+      (connection) => connection.providerSpecificData?.lastModelSyncError,
+    )?.providerSpecificData?.lastModelSyncError;
+
+    return {
+      autoSync,
+      canSync: Boolean(activeConnection),
+      syncing: syncingProviderId === providerId,
+      autoSyncing: autoSyncingProviderId === providerId,
+      lastSyncedAt,
+      lastError,
+      connectionCount: providerConnections.length,
+      activeConnection,
+    };
+  };
+
   // Toggle all connections for a provider on/off. authType may be a single
   // string or an array (kiro counts oauth + api_key/apikey together).
   const handleToggleProvider = async (providerId, authType, newActive) => {
@@ -228,6 +262,106 @@ export default function ProvidersPage() {
         }),
       ),
     );
+  };
+
+  const handleSyncProviderModels = async (providerId) => {
+    if (syncingProviderId) return;
+    const syncState = getProviderModelSyncState(providerId);
+    const connection = syncState.activeConnection;
+    if (!connection) {
+      notify.warning("Add a connection before importing models");
+      return;
+    }
+
+    setSyncingProviderId(providerId);
+    try {
+      const res = await fetch(`/api/providers/${connection.id}/sync-models`, {
+        method: "POST",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        notify.error(data.error || "Failed to import models");
+        return;
+      }
+
+      const syncedAt = new Date().toISOString();
+      const count = data.syncedModels ?? data.models?.length ?? 0;
+      setConnections((prev) =>
+        prev.map((item) =>
+          item.id === connection.id
+            ? {
+                ...item,
+                providerSpecificData: {
+                  ...(item.providerSpecificData || {}),
+                  lastModelSyncAt: data.syncedAt || syncedAt,
+                  lastModelSyncCount: count,
+                  lastModelSyncError: null,
+                },
+              }
+            : item,
+        ),
+      );
+      notify.success(`Imported ${count} model${count === 1 ? "" : "s"}`);
+    } catch (error) {
+      console.log("Error syncing provider models:", error);
+      notify.error("Failed to import models");
+    } finally {
+      setSyncingProviderId(null);
+    }
+  };
+
+  const handleToggleProviderAutoSync = async (providerId, on) => {
+    if (autoSyncingProviderId) return;
+    const providerConnections = getProviderConnections(providerId);
+    if (providerConnections.length === 0) {
+      notify.warning("Add a connection before enabling Auto-Sync");
+      return;
+    }
+
+    setAutoSyncingProviderId(providerId);
+    try {
+      const results = await Promise.allSettled(
+        providerConnections.map((connection) =>
+          fetch(`/api/providers/${connection.id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              providerSpecificData: {
+                ...(connection.providerSpecificData || {}),
+                autoSync: on,
+              },
+            }),
+          }),
+        ),
+      );
+      const failed = results.some(
+        (result) => result.status === "rejected" || !result.value?.ok,
+      );
+      if (failed) {
+        notify.error("Failed to update Auto-Sync");
+        return;
+      }
+
+      setConnections((prev) =>
+        prev.map((connection) =>
+          connection.provider === providerId
+            ? {
+                ...connection,
+                providerSpecificData: {
+                  ...(connection.providerSpecificData || {}),
+                  autoSync: on,
+                },
+              }
+            : connection,
+        ),
+      );
+      notify.success(on ? "Auto-Sync enabled" : "Auto-Sync disabled");
+    } catch (error) {
+      console.log("Error toggling provider Auto-Sync:", error);
+      notify.error("Failed to update Auto-Sync");
+    } finally {
+      setAutoSyncingProviderId(null);
+    }
   };
 
   const handleBatchTest = async (mode, providerId = null) => {
@@ -341,11 +475,11 @@ export default function ProvidersPage() {
         </div>
       )}
 
-      {/* Custom Providers (OpenAI/Anthropic Compatible) — dynamic */}
+      {/* AI Providers (OpenAI/Anthropic Compatible) — dynamic */}
       <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <h2 className="text-lg sm:text-xl font-semibold flex items-center gap-2 leading-tight">
-            Custom Providers (OpenAI/Anthropic Compatible){" "}
+            AI Providers (OpenAI/Anthropic Compatible){" "}
           </h2>
           <div className="grid grid-cols-1 gap-2 sm:flex sm:w-auto">
             <Button
@@ -383,6 +517,11 @@ export default function ProvidersPage() {
                   provider={info}
                   stats={getProviderStats(info.id, "apikey")}
                   authType="compatible"
+                  modelSync={getProviderModelSyncState(info.id)}
+                  onSyncModels={() => handleSyncProviderModels(info.id)}
+                  onToggleAutoSync={(on) =>
+                    handleToggleProviderAutoSync(info.id, on)
+                  }
                   onToggle={(active) =>
                     handleToggleProvider(info.id, "apikey", active)
                   }
@@ -735,6 +874,9 @@ function ApiKeyProviderCard({
   stats,
   authType,
   onToggle,
+  modelSync,
+  onSyncModels,
+  onToggleAutoSync,
 }) {
   const { connected, error, errorCode, errorTime, allDisabled } = stats;
   const isCompatible = providerId.startsWith(OPENAI_COMPATIBLE_PREFIX);
@@ -764,85 +906,159 @@ function ApiKeyProviderCard({
     return `/providers/${provider.id}.png`;
   };
 
+  const syncMeta = modelSync?.lastSyncedAt
+    ? `Synced ${getRelativeTime(modelSync.lastSyncedAt)}`
+    : modelSync?.lastError
+      ? "Sync error"
+      : modelSync?.connectionCount > 0
+        ? "Ready to import"
+        : "Add a connection first";
+
   return (
     <Link href={`/dashboard/providers/${providerId}`} className="group min-w-0">
       <Card
         padding="xs"
         className={`h-full hover:bg-black/[0.01] dark:hover:bg-white/[0.01] transition-colors cursor-pointer ${allDisabled ? "opacity-50" : ""}`}
       >
-        <div className="flex min-w-0 items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <div
-              className="size-8 shrink-0 rounded-lg flex items-center justify-center"
-              style={{
-                backgroundColor: `${provider.color?.length > 7 ? provider.color : provider.color + "15"}`,
-              }}
-            >
-              <ProviderIcon
-                src={getIconPath()}
-                alt={provider.name}
-                size={30}
-                className="object-contain rounded-lg max-w-[30px] max-h-[30px]"
-                fallbackText={
-                  provider.textIcon || provider.id.slice(0, 2).toUpperCase()
-                }
-                fallbackColor={provider.color}
-              />
-            </div>
-            <div className="min-w-0">
-              <h3 className="truncate font-semibold">{provider.name}</h3>
-              <div className="flex min-w-0 items-center gap-1.5 text-xs flex-wrap">
-                {allDisabled ? (
-                  <Badge variant="default" size="sm">
-                    <span className="flex items-center gap-1">
-                      <span className="material-symbols-outlined text-[12px]">
-                        pause_circle
-                      </span>
-                      Disabled
-                    </span>
-                  </Badge>
-                ) : (
-                  <>
-                    {getStatusDisplay(connected, error, errorCode)}
-                    {isCompatible && (
-                      <Badge variant="default" size="sm">
-                        {provider.apiType === "responses"
-                          ? "Responses"
-                          : "Chat"}
-                      </Badge>
-                    )}
-                    {isAnthropicCompatible && (
-                      <Badge variant="default" size="sm">
-                        Messages
-                      </Badge>
-                    )}
-                    {errorTime && (
-                      <span className="text-text-muted">{errorTime}</span>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {stats.total > 0 && (
+        <div className="flex h-full min-w-0 flex-col gap-3">
+          <div className="flex min-w-0 items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
               <div
-                className="opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onToggle(!allDisabled ? false : true);
+                className="size-8 shrink-0 rounded-lg flex items-center justify-center"
+                style={{
+                  backgroundColor: `${provider.color?.length > 7 ? provider.color : provider.color + "15"}`,
                 }}
               >
-                <Toggle
-                  size="sm"
-                  checked={!allDisabled}
-                  onChange={() => {}}
-                  title={allDisabled ? "Enable provider" : "Disable provider"}
+                <ProviderIcon
+                  src={getIconPath()}
+                  alt={provider.name}
+                  size={30}
+                  className="object-contain rounded-lg max-w-[30px] max-h-[30px]"
+                  fallbackText={
+                    provider.textIcon || provider.id.slice(0, 2).toUpperCase()
+                  }
+                  fallbackColor={provider.color}
                 />
               </div>
-            )}
+              <div className="min-w-0">
+                <h3 className="truncate font-semibold">{provider.name}</h3>
+                <div className="flex min-w-0 items-center gap-1.5 text-xs flex-wrap">
+                  {allDisabled ? (
+                    <Badge variant="default" size="sm">
+                      <span className="flex items-center gap-1">
+                        <span className="material-symbols-outlined text-[12px]">
+                          pause_circle
+                        </span>
+                        Disabled
+                      </span>
+                    </Badge>
+                  ) : (
+                    <>
+                      {getStatusDisplay(connected, error, errorCode)}
+                      {isCompatible && (
+                        <Badge variant="default" size="sm">
+                          {provider.apiType === "responses"
+                            ? "Responses"
+                            : "Chat"}
+                        </Badge>
+                      )}
+                      {isAnthropicCompatible && (
+                        <Badge variant="default" size="sm">
+                          Messages
+                        </Badge>
+                      )}
+                      {errorTime && (
+                        <span className="text-text-muted">{errorTime}</span>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {stats.total > 0 && (
+                <div
+                  className="opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onToggle(!allDisabled ? false : true);
+                  }}
+                >
+                  <Toggle
+                    size="sm"
+                    checked={!allDisabled}
+                    onChange={() => {}}
+                    title={allDisabled ? "Enable provider" : "Disable provider"}
+                  />
+                </div>
+              )}
+            </div>
           </div>
+
+          {(isCompatible || isAnthropicCompatible) && modelSync && (
+            <div className="mt-auto space-y-2 border-t border-border pt-3">
+              <div className="flex items-center justify-between gap-2 text-[11px] text-text-muted">
+                <span className="truncate" title={modelSync.lastError || syncMeta}>
+                  {modelSync.lastError || syncMeta}
+                </span>
+                {modelSync.autoSync && (
+                  <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 font-semibold text-emerald-600 dark:text-emerald-400">
+                    Auto
+                  </span>
+                )}
+              </div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onSyncModels?.();
+                  }}
+                  disabled={!modelSync.canSync || modelSync.syncing}
+                  className="flex h-9 min-w-0 items-center justify-center gap-2 rounded-lg border border-border bg-surface-2 px-3 text-xs font-semibold text-text-main transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-50"
+                  title="Import model list from the provider /models endpoint"
+                >
+                  <span
+                    className={`material-symbols-outlined text-[18px] ${modelSync.syncing ? "animate-spin" : ""}`}
+                  >
+                    {modelSync.syncing ? "progress_activity" : "download"}
+                  </span>
+                  <span className="truncate">
+                    {modelSync.syncing ? "Importing..." : "Import from /models"}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onToggleAutoSync?.(!modelSync.autoSync);
+                  }}
+                  disabled={!modelSync.connectionCount || modelSync.autoSyncing}
+                  aria-pressed={modelSync.autoSync}
+                  className={`flex h-9 min-w-0 items-center justify-center gap-2 rounded-lg border px-3 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                    modelSync.autoSync
+                      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                      : "border-border bg-surface-2 text-text-main hover:bg-surface-3"
+                  }`}
+                  title="Automatically refresh this provider model list on schedule"
+                >
+                  <span
+                    className={`material-symbols-outlined text-[20px] ${modelSync.autoSyncing ? "animate-spin" : ""}`}
+                  >
+                    {modelSync.autoSyncing
+                      ? "progress_activity"
+                      : modelSync.autoSync
+                        ? "toggle_on"
+                        : "toggle_off"}
+                  </span>
+                  <span>Auto-Sync</span>
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </Card>
     </Link>
@@ -866,6 +1082,17 @@ ApiKeyProviderCard.propTypes = {
   }).isRequired,
   authType: PropTypes.string,
   onToggle: PropTypes.func,
+  modelSync: PropTypes.shape({
+    autoSync: PropTypes.bool,
+    canSync: PropTypes.bool,
+    syncing: PropTypes.bool,
+    autoSyncing: PropTypes.bool,
+    lastSyncedAt: PropTypes.string,
+    lastError: PropTypes.string,
+    connectionCount: PropTypes.number,
+  }),
+  onSyncModels: PropTypes.func,
+  onToggleAutoSync: PropTypes.func,
 };
 
 function ProviderTestResultsView({ results }) {

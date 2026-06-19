@@ -112,7 +112,12 @@ export async function createProviderConnection(data) {
     // access_token: never dedup — user manages duplicates manually
 
     if (existing) {
-      const merged = { ...existing, ...data, updatedAt: now };
+      const providerSpecificData = {
+        ...(existing.providerSpecificData || {}),
+        ...(data.providerSpecificData || {}),
+        autoSync: data.providerSpecificData?.autoSync ?? existing.providerSpecificData?.autoSync ?? true,
+      };
+      const merged = { ...existing, ...data, providerSpecificData, updatedAt: now };
       upsert(db, merged);
       result = merged;
       return;
@@ -140,9 +145,10 @@ export async function createProviderConnection(data) {
     for (const f of OPTIONAL_FIELDS) {
       if (data[f] !== undefined && data[f] !== null) conn[f] = data[f];
     }
-    if (data.providerSpecificData && Object.keys(data.providerSpecificData).length > 0) {
-      conn.providerSpecificData = data.providerSpecificData;
-    }
+    conn.providerSpecificData = {
+      ...(data.providerSpecificData || {}),
+      autoSync: data.providerSpecificData?.autoSync !== false,
+    };
     if (data.email !== undefined) conn.email = data.email;
 
     upsert(db, conn);

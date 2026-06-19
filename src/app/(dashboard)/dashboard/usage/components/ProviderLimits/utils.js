@@ -3,6 +3,7 @@ import { getModelsByProviderId } from "open-sse/config/providerModels.js";
 // ─── Constants ───────────────────────────────────────────────────────────────
 export const QUOTA_CACHE_KEY = "quotaCacheData";
 export const REFRESH_INTERVAL_MS = 60000;
+export const AUTO_REFRESH_SECONDS = Math.max(1, Math.round(REFRESH_INTERVAL_MS / 1000));
 // Claude usage/quota endpoint rate-limits; poll it less often than other providers
 export const CLAUDE_REFRESH_INTERVAL_MS = 180000;
 export const DEPLETED_QUOTA_THRESHOLD = 5;
@@ -30,10 +31,10 @@ export function getConnectionLabel(connection) {
 }
 
 export function getConnectionQuotaRemaining(connection, quotaData) {
-  const quota = quotaData[connection.id]?.quotas?.[0];
-  if (!quota) return Number.POSITIVE_INFINITY;
-  if (typeof quota.remaining === "number") return quota.remaining;
-  return Number.POSITIVE_INFINITY;
+  const quotas = quotaData[connection.id]?.quotas || [];
+  if (!quotas.length) return Number.POSITIVE_INFINITY;
+
+  return Math.min(...quotas.map((quota) => getRemainingPercentage(quota)));
 }
 
 export function sortVisibleConnections(
@@ -43,7 +44,7 @@ export function sortVisibleConnections(
   providerFilter,
   quotaSortMode,
 ) {
-  if (providerFilter === "codex" && quotaSortMode !== "default") {
+  if (quotaSortMode !== "default") {
     return [...connections].sort((a, b) => {
       const remainingA = getConnectionQuotaRemaining(a, quotaData);
       const remainingB = getConnectionQuotaRemaining(b, quotaData);

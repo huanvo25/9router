@@ -150,6 +150,33 @@ function killProcess(pid, force = false, sudoPassword = null) {
   }
 }
 
+async function killProcessAndWait(pid, force = false, sudoPassword = null) {
+  if (!pid) return false;
+  if (IS_WIN) {
+    const flag = force ? "/F " : "";
+    try {
+      execSync(`taskkill ${flag}/PID ${pid}`, { windowsHide: true, stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  const sig = force ? "SIGKILL" : "SIGTERM";
+  const cmd = `pkill -${sig} -P ${pid} 2>/dev/null; kill -${sig} ${pid} 2>/dev/null`;
+  try {
+    if (sudoPassword || isSudoAvailable()) {
+      const { execWithPassword } = require("./dns/dnsConfig");
+      await execWithPassword(cmd, sudoPassword || "");
+    } else {
+      execSync(cmd, { windowsHide: true, stdio: "ignore" });
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function deriveKey() {
   try {
     const { machineIdSync } = require("node-machine-id");
@@ -375,6 +402,15 @@ async function getMitmStatus() {
   let running = serverProcess !== null && !serverProcess.killed;
   let pid = serverPid;
 
+  const health = await pollMitmHealth(500, MITM_PORT);
+  if (health?.ok) {
+    running = true;
+    pid = health.pid || pid;
+    if (pid) {
+      try { fs.writeFileSync(PID_FILE, String(pid)); } catch { /* ignore */ }
+    }
+  }
+
   if (!running) {
     try {
       if (fs.existsSync(PID_FILE)) {
@@ -470,11 +506,19 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
       if (fs.existsSync(PID_FILE)) {
         const savedPid = parseInt(fs.readFileSync(PID_FILE, "utf-8").trim(), 10);
         if (savedPid && isProcessAlive(savedPid)) {
-          serverPid = savedPid;
-          log(`♻️ Reusing existing process (PID: ${savedPid})`);
-          await saveMitmSettings(true, sudoPassword);
-          if (sudoPassword) setCachedPassword(sudoPassword);
-          return { running: true, pid: savedPid };
+          const health = await pollMitmHealth(1000, MITM_PORT);
+          if (health?.ok) {
+            serverPid = health.pid || savedPid;
+            if (health.pid && health.pid !== savedPid) {
+              try { fs.writeFileSync(PID_FILE, String(health.pid)); } catch { /* ignore */ }
+            }
+            log(`♻️ Reusing existing process (PID: ${serverPid})`);
+            await saveMitmSettings(true, sudoPassword);
+            if (sudoPassword) setCachedPassword(sudoPassword);
+            return { running: true, pid: serverPid };
+          }
+          killProcess(savedPid, true, sudoPassword);
+          fs.unlinkSync(PID_FILE);
         } else {
           fs.unlinkSync(PID_FILE);
         }
@@ -588,6 +632,7 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
         stdio: ["ignore", "pipe", "pipe"],
         env: {
           ...process.env,
+          DATA_DIR,
           ROUTER_API_KEY: apiKey,
           NODE_ENV: "production",
           MITM_ROUTER_BASE: mitmRouterBase,
@@ -601,6 +646,7 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
     // instead of /root when sudo resets the environment.
     const inlineCmd = [
       `HOME=${shellQuoteSingle(os.homedir())}`,
+      `DATA_DIR=${shellQuoteSingle(DATA_DIR)}`,
       `ROUTER_API_KEY=${shellQuoteSingle(apiKey)}`,
       `MITM_ROUTER_BASE=${shellQuoteSingle(mitmRouterBase)}`,
       "NODE_ENV=production",
@@ -622,6 +668,7 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
       stdio: ["ignore", "pipe", "pipe"],
       env: {
         ...process.env,
+        DATA_DIR,
         ROUTER_API_KEY: apiKey,
         NODE_ENV: "production",
         MITM_ROUTER_BASE: mitmRouterBase,
@@ -695,6 +742,11 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
 
   if (_updateSettings) await _updateSettings({ mitmCertInstalled: true }).catch(() => { });
 
+  if (health.pid) {
+    serverPid = health.pid;
+    try { fs.writeFileSync(PID_FILE, String(health.pid)); } catch { /* ignore */ }
+  }
+
   log(`✅ Server healthy (PID: ${serverPid || health.pid})`);
 
   // Log DNS status per tool
@@ -720,16 +772,43 @@ async function stopServer(sudoPassword) {
 
   // Kill server process
   const proc = serverProcess;
-  const pidToKill = proc && !proc.killed
+  const health = await pollMitmHealth(500, MITM_PORT);
+  const pidToKill = health?.pid || (proc && !proc.killed
     ? proc.pid
-    : (() => { try { return parseInt(fs.readFileSync(PID_FILE, "utf-8").trim(), 10); } catch { return null; } })();
+    : (() => { try { return parseInt(fs.readFileSync(PID_FILE, "utf-8").trim(), 10); } catch { return null; } })());
 
   if (pidToKill && isProcessAlive(pidToKill)) {
     log(`Killing server (PID: ${pidToKill})...`);
-    killProcess(pidToKill, false, sudoPassword);
+    await killProcessAndWait(pidToKill, false, sudoPassword);
     await new Promise(r => setTimeout(r, 1000));
-    if (isProcessAlive(pidToKill)) killProcess(pidToKill, true, sudoPassword);
+    if (isProcessAlive(pidToKill)) await killProcessAndWait(pidToKill, true, sudoPassword);
   }
+
+  const stillHealthy = await pollMitmHealth(1500, MITM_PORT);
+  if (stillHealthy?.ok) {
+    const fallbackPid = stillHealthy.pid;
+    if (fallbackPid && fallbackPid !== pidToKill && isProcessAlive(fallbackPid)) {
+      log(`Killing server listener (PID: ${fallbackPid})...`);
+      await killProcessAndWait(fallbackPid, true, sudoPassword);
+    } else {
+      const owner = await getPort443Owner(sudoPassword);
+      if (owner?.pid) {
+        log(`Killing server listener (PID: ${owner.pid})...`);
+        await killPort443Owner(owner, sudoPassword);
+      }
+    }
+  }
+
+  const finalHealth = await pollMitmHealth(1000, MITM_PORT);
+  if (finalHealth?.ok) {
+    if (!IS_WIN && !sudoPassword) {
+      throw new Error("Sudo password required to stop MITM server");
+    }
+    setCachedPassword(null);
+    await clearEncryptedPassword();
+    throw new Error("MITM server did not stop. Re-enter sudo password and try again.");
+  }
+
   serverProcess = null;
   serverPid = null;
 

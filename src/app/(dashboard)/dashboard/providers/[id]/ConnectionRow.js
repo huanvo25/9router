@@ -6,7 +6,7 @@ import PropTypes from "prop-types";
 import { Badge, Toggle, Tooltip } from "@/shared/components";
 import CooldownTimer from "./CooldownTimer";
 
-export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete, oneByOneStatus = null, autoPing = null }) {
+export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete, oneByOneStatus = null, autoPing = null, modelSync = null }) {
   const [showProxyDropdown, setShowProxyDropdown] = useState(false);
   const [updatingProxy, setUpdatingProxy] = useState(false);
   const proxyDropdownRef = useRef(null);
@@ -187,6 +187,16 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
                 {getOneByOneLabel()}
               </Badge>
             )}
+            {connection.providerSpecificData?.autoSync !== false && (
+              <Badge variant="success" size="sm">
+                Auto-Sync
+              </Badge>
+            )}
+            {connection.providerSpecificData?.lastModelSyncCount > 0 && (
+              <Badge variant="default" size="sm">
+                {connection.providerSpecificData.lastModelSyncCount} models
+              </Badge>
+            )}
           </div>
           {hasAnyProxy && (
             <div className="mt-1 flex items-center gap-2 flex-wrap">
@@ -208,7 +218,7 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
         </div>
       </div>
       <div className="flex w-full items-center justify-between gap-2 sm:w-auto sm:justify-end">
-        <div className="grid flex-1 grid-cols-3 gap-1 sm:flex sm:flex-none">
+        <div className="grid flex-1 grid-cols-5 gap-1 sm:flex sm:flex-none">
           {/* Proxy button with inline dropdown */}
           {(proxyPools || []).length > 0 && (
             <div className="relative" ref={proxyDropdownRef}>
@@ -253,6 +263,33 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
                 <span className="text-[10px] leading-tight">Auto-ping</span>
               </button>
             </Tooltip>
+          )}
+          {modelSync && (
+            <>
+              <Tooltip text="Fetch this provider's /models list and cache it for 9Router.">
+                <button
+                  onClick={modelSync.onSync}
+                  disabled={modelSync.syncing}
+                  className="flex w-full flex-col items-center rounded px-2 py-1 text-text-muted transition-colors hover:bg-black/5 hover:text-primary disabled:opacity-50 dark:hover:bg-white/5"
+                >
+                  <span className="material-symbols-outlined text-[18px]" style={modelSync.syncing ? { animation: "spin 1s linear infinite" } : undefined}>
+                    {modelSync.syncing ? "progress_activity" : "sync"}
+                  </span>
+                  <span className="text-[10px] leading-tight">Sync</span>
+                </button>
+              </Tooltip>
+              <Tooltip text="Automatically refresh model list every 24h (configurable via MODEL_SYNC_INTERVAL_HOURS).">
+                <button
+                  onClick={() => modelSync.onToggleAutoSync(!modelSync.autoSync)}
+                  className={`flex w-full flex-col items-center rounded px-2 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${modelSync.autoSync ? "text-primary" : "text-text-muted hover:text-primary"}`}
+                >
+                  <span className="material-symbols-outlined text-[18px]">
+                    {modelSync.autoSync ? "toggle_on" : "toggle_off"}
+                  </span>
+                  <span className="text-[10px] leading-tight">Auto</span>
+                </button>
+              </Tooltip>
+            </>
           )}
           <button onClick={onEdit} className="flex flex-col items-center rounded px-2 py-1 text-text-muted hover:bg-black/5 hover:text-primary dark:hover:bg-white/5">
             <span className="material-symbols-outlined text-[18px]">edit</span>
@@ -310,5 +347,11 @@ ConnectionRow.propTypes = {
   autoPing: PropTypes.shape({
     on: PropTypes.bool,
     onToggle: PropTypes.func,
+  }),
+  modelSync: PropTypes.shape({
+    autoSync: PropTypes.bool,
+    syncing: PropTypes.bool,
+    onSync: PropTypes.func,
+    onToggleAutoSync: PropTypes.func,
   }),
 };

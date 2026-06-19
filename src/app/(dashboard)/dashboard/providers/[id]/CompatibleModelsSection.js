@@ -4,7 +4,8 @@ import { useState } from "react";
 import PropTypes from "prop-types";
 import { Button } from "@/shared/components";
 import { getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
-function CompatibleModelRow({ modelId, fullModel, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting }) {
+
+function CompatibleModelRow({ modelId, fullModel, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting, source }) {
   const borderColor = testStatus === "ok"
     ? "border-green-500/40"
     : testStatus === "error"
@@ -29,6 +30,11 @@ function CompatibleModelRow({ modelId, fullModel, copied, onCopy, onDeleteAlias,
         <p className="text-sm font-medium truncate">{modelId}</p>
         <div className="flex items-center gap-1 mt-1">
           <code className="text-xs text-text-muted font-mono bg-sidebar px-1.5 py-0.5 rounded">{fullModel}</code>
+          {source && (
+            <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+              {source}
+            </span>
+          )}
           <div className="relative group/btn">
             <button
               onClick={() => onCopy(fullModel, `model-${modelId}`)}
@@ -60,18 +66,20 @@ function CompatibleModelRow({ modelId, fullModel, copied, onCopy, onDeleteAlias,
           )}
         </div>
       </div>
-      <button
-        onClick={onDeleteAlias}
-        className="p-1 hover:bg-red-50 rounded text-red-500"
-        title="Remove model"
-      >
-        <span className="material-symbols-outlined text-sm">delete</span>
-      </button>
+      {onDeleteAlias && (
+        <button
+          onClick={onDeleteAlias}
+          className="p-1 hover:bg-red-50 rounded text-red-500"
+          title="Remove model"
+        >
+          <span className="material-symbols-outlined text-sm">delete</span>
+        </button>
+      )}
     </div>
   );
 }
 
-export default function CompatibleModelsSection({ providerStorageAlias, providerDisplayAlias, modelAliases, customModels, copied, onCopy, onDeleteAlias, onAddCustomModel, onDeleteCustomModel, connections, isAnthropic }) {
+export default function CompatibleModelsSection({ providerStorageAlias, providerDisplayAlias, modelAliases, customModels, syncedModels, copied, onCopy, onDeleteAlias, onAddCustomModel, onDeleteCustomModel, connections, isAnthropic }) {
   const [newModel, setNewModel] = useState("");
   const [adding, setAdding] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -102,6 +110,21 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
     providerAlias: providerStorageAlias,
     type: "llm",
   });
+  const existingModelIds = new Set(allModels.map((model) => model.id));
+  for (const model of syncedModels || []) {
+    const modelId = model?.id || model?.name || model?.model;
+    if (typeof modelId !== "string" || !modelId.trim()) continue;
+    const id = modelId.trim();
+    if (existingModelIds.has(id)) continue;
+    allModels.push({
+      id,
+      name: model?.name || model?.displayName || model?.display_name || id,
+      fullModel: `${providerStorageAlias}/${id}`,
+      alias: null,
+      source: "synced",
+    });
+    existingModelIds.add(id);
+  }
 
   const handleAdd = async () => {
     if (!newModel.trim() || adding) return;
@@ -202,10 +225,11 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
               fullModel={`${providerDisplayAlias}/${id}`}
               copied={copied}
               onCopy={onCopy}
-              onDeleteAlias={() => source === "custom" ? onDeleteCustomModel(id) : onDeleteAlias(alias)}
+              onDeleteAlias={source === "synced" ? null : () => source === "custom" ? onDeleteCustomModel(id) : onDeleteAlias(alias)}
               onTest={connections.length > 0 ? () => handleTestModel(id) : undefined}
               testStatus={modelTestResults[id]}
               isTesting={testingModelId === id}
+              source={source}
             />
           ))}
         </div>
@@ -219,6 +243,7 @@ CompatibleModelsSection.propTypes = {
   providerDisplayAlias: PropTypes.string.isRequired,
   modelAliases: PropTypes.object.isRequired,
   customModels: PropTypes.arrayOf(PropTypes.object),
+  syncedModels: PropTypes.arrayOf(PropTypes.object),
   copied: PropTypes.string,
   onCopy: PropTypes.func.isRequired,
   onDeleteAlias: PropTypes.func.isRequired,

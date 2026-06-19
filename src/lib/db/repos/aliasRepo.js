@@ -5,6 +5,7 @@ import { makeKv } from "../helpers/kvStore.js";
 const aliasKv = makeKv("modelAliases");
 const customKv = makeKv("customModels");
 const mitmKv = makeKv("mitmAlias");
+const syncedModelsKv = makeKv("syncedAvailableModels");
 
 // modelAliases: key=alias, value=modelString
 export async function getModelAliases() {
@@ -46,6 +47,51 @@ export async function addCustomModel({ providerAlias, id, type = "llm", name }) 
 
 export async function deleteCustomModel({ providerAlias, id, type = "llm" }) {
   await customKv.remove(customKey(providerAlias, id, type));
+}
+
+// syncedAvailableModels: key=providerId, value={ models, syncedAt, connectionId }
+export async function getSyncedAvailableModels(providerId) {
+  if (!providerId) return [];
+  const record = await syncedModelsKv.get(providerId, null);
+  if (Array.isArray(record)) return record;
+  return Array.isArray(record?.models) ? record.models : [];
+}
+
+export async function getAllSyncedAvailableModels() {
+  const all = await syncedModelsKv.getAll();
+  const out = {};
+  for (const [providerId, record] of Object.entries(all)) {
+    out[providerId] = Array.isArray(record) ? record : (record?.models || []);
+  }
+  return out;
+}
+
+export async function replaceSyncedAvailableModels(providerId, models, metadata = {}) {
+  const normalized = Array.isArray(models)
+    ? models
+        .map((model) => {
+          const id = model?.id || model?.name || model?.model;
+          if (typeof id !== "string" || !id.trim()) return null;
+          return {
+            ...model,
+            id: id.trim(),
+            name: model?.name || model?.displayName || model?.display_name || id.trim(),
+            source: model?.source || "auto-sync",
+          };
+        })
+        .filter(Boolean)
+    : [];
+
+  await syncedModelsKv.set(providerId, {
+    models: normalized,
+    syncedAt: new Date().toISOString(),
+    ...metadata,
+  });
+  return normalized;
+}
+
+export async function clearSyncedAvailableModels(providerId) {
+  await syncedModelsKv.remove(providerId);
 }
 
 // mitmAlias: key=toolName, value=mappings object

@@ -101,7 +101,15 @@ export default function MitmServerCard({ apiKeys, cloudEnabled, onStatusChange }
           setPort443Conflict({ owner: data.portOwner, password });
           return;
         }
-        setActionError(data.error || `Failed to ${action} MITM server`);
+        const errorMessage = data.error || `Failed to ${action} MITM server`;
+        if (!serverIsWindows && /sudo password|re-enter sudo/i.test(errorMessage)) {
+          await fetchStatus();
+          setPendingAction(action);
+          setShowPasswordModal(true);
+          setModalError(errorMessage);
+          return;
+        }
+        setActionError(errorMessage);
         return;
       }
       setShowPasswordModal(false);

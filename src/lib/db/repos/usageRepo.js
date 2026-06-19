@@ -83,6 +83,10 @@ function pushToRing(entry) {
   }
 }
 
+function isZeroTokenRequest(entry) {
+  return (entry.promptTokens || 0) === 0 && (entry.completionTokens || 0) === 0;
+}
+
 async function getConnectionMapCached() {
   if (Date.now() - connCache.ts < CONN_CACHE_TTL_MS) return connCache.map;
   try {
@@ -198,10 +202,12 @@ export function trackPendingRequest(model, provider, connectionId, started, erro
 export async function getActiveRequests() {
   const activeRequests = [];
   const connectionMap = await getConnectionMapCached();
+  const accountedByModel = {};
 
   for (const [connectionId, models] of Object.entries(pendingRequests.byAccount)) {
     for (const [modelKey, count] of Object.entries(models)) {
       if (count > 0) {
+        accountedByModel[modelKey] = (accountedByModel[modelKey] || 0) + count;
         const accountName = connectionMap[connectionId] || `Account ${connectionId.slice(0, 8)}...`;
         const match = modelKey.match(/^(.*) \((.*)\)$/);
         activeRequests.push({
@@ -210,6 +216,19 @@ export async function getActiveRequests() {
           account: accountName, count,
         });
       }
+    }
+  }
+
+  for (const [modelKey, count] of Object.entries(pendingRequests.byModel)) {
+    const unaccountedCount = count - (accountedByModel[modelKey] || 0);
+    if (unaccountedCount > 0) {
+      const match = modelKey.match(/^(.*) \((.*)\)$/);
+      activeRequests.push({
+        model: match ? match[1] : modelKey,
+        provider: match ? match[2] : "unknown",
+        account: "Unknown account",
+        count: unaccountedCount,
+      });
     }
   }
 
@@ -227,7 +246,7 @@ export async function getActiveRequests() {
       };
     })
     .filter((e) => {
-      if (e.promptTokens === 0 && e.completionTokens === 0) return false;
+      if (isZeroTokenRequest(e)) return true;
       const minute = e.timestamp ? e.timestamp.slice(0, 16) : "";
       const key = `${e.model}|${e.provider}|${e.promptTokens}|${e.completionTokens}|${minute}`;
       if (seen.has(key)) return false;
@@ -355,7 +374,7 @@ export async function getUsageStats(period = "all") {
       };
     })
     .filter((e) => {
-      if (e.promptTokens === 0 && e.completionTokens === 0) return false;
+      if (isZeroTokenRequest(e)) return true;
       const minute = e.timestamp ? e.timestamp.slice(0, 16) : "";
       const key = `${e.model}|${e.provider}|${e.promptTokens}|${e.completionTokens}|${minute}`;
       if (seen.has(key)) return false;

@@ -42,6 +42,8 @@ export {
 export {
   getModelAliases, setModelAlias, deleteModelAlias,
   getCustomModels, addCustomModel, deleteCustomModel,
+  getSyncedAvailableModels, getAllSyncedAvailableModels,
+  replaceSyncedAvailableModels, clearSyncedAvailableModels,
   getMitmAlias, setMitmAliasAll,
 } from "./repos/aliasRepo.js";
 
@@ -81,12 +83,14 @@ export async function exportDb() {
     combos: db.all(`SELECT * FROM combos`).map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), createdAt: r.createdAt, updatedAt: r.updatedAt })),
     modelAliases: {},
     customModels: [],
+    syncedAvailableModels: {},
     mitmAlias: {},
     pricing: {},
   };
 
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'modelAliases'`)) out.modelAliases[r.key] = parseJson(r.value);
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'customModels'`)) out.customModels.push(parseJson(r.value));
+  for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'syncedAvailableModels'`)) out.syncedAvailableModels[r.key] = parseJson(r.value);
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'mitmAlias'`)) out.mitmAlias[r.key] = parseJson(r.value);
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'pricing'`)) out.pricing[r.key] = parseJson(r.value);
 
@@ -107,7 +111,7 @@ export async function importDb(payload) {
     db.run(`DELETE FROM proxyPools`);
     db.run(`DELETE FROM apiKeys`);
     db.run(`DELETE FROM combos`);
-    db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing')`);
+    db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'syncedAvailableModels', 'mitmAlias', 'pricing')`);
 
     // Settings
     if (payload.settings) {
@@ -153,6 +157,9 @@ export async function importDb(payload) {
     for (const m of payload.customModels || []) {
       const k = `${m.providerAlias}|${m.id}|${m.type || "llm"}`;
       db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('customModels', ?, ?)`, [k, stringifyJson(m)]);
+    }
+    for (const [providerId, record] of Object.entries(payload.syncedAvailableModels || {})) {
+      db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('syncedAvailableModels', ?, ?)`, [providerId, stringifyJson(record)]);
     }
     for (const [tool, mappings] of Object.entries(payload.mitmAlias || {})) {
       db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('mitmAlias', ?, ?)`, [tool, stringifyJson(mappings || {})]);
