@@ -1,13 +1,40 @@
 import { FORMATS } from "../../translator/formats.js";
 import { needsTranslation } from "../../translator/index.js";
 import { ollamaBodyToOpenAI } from "../../translator/response/ollama-to-openai.js";
-import { addBufferToUsage, filterUsageForFormat } from "../../utils/usageTracking.js";
+import { addBufferToUsage, estimateUsage, filterUsageForFormat, hasValidUsage } from "../../utils/usageTracking.js";
 import { createErrorResult } from "../../utils/error.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { parseSSEToOpenAIResponse } from "./sseToJsonHandler.js";
 import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, saveUsageStats } from "./requestDetail.js";
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
+
+function estimateContentLengthFromResponse(body) {
+  if (!body || typeof body !== "object") return 0;
+  try {
+    const content = body.choices?.[0]?.message?.content;
+    if (typeof content === "string") return content.length;
+    if (Array.isArray(content)) {
+      return content.reduce((total, part) => {
+        if (typeof part?.text === "string") return total + part.text.length;
+        if (typeof part?.content === "string") return total + part.content.length;
+        return total;
+      }, 0);
+    }
+    if (Array.isArray(body.content)) {
+      return body.content.reduce((total, part) => {
+        if (typeof part?.text === "string") return total + part.text.length;
+        return total;
+      }, 0);
+    }
+    const response = body.response || body;
+    const parts = response?.candidates?.[0]?.content?.parts;
+    if (Array.isArray(parts)) {
+      return parts.reduce((total, part) => total + (typeof part?.text === "string" ? part.text.length : 0), 0);
+    }
+  } catch {}
+  return 0;
+}
 
 /**
  * Translate non-streaming response body from provider format → OpenAI format.
@@ -172,7 +199,10 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   // Decloak tool_use names once on raw Claude body, before any translation (INPUT side)
   responseBody = decloakToolNames(responseBody, toolNameMap);
 
-  const usage = extractUsageFromResponse(responseBody);
+  let usage = extractUsageFromResponse(responseBody);
+  if (!hasValidUsage(usage)) {
+    usage = estimateUsage(finalBody || translatedBody || body, estimateContentLengthFromResponse(responseBody));
+  }
   appendLog({ tokens: usage, status: "200 OK" });
   saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint });
 

@@ -4,6 +4,7 @@ import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { FORMATS } from "../../translator/formats.js";
 import { PROVIDERS } from "../../config/providers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats } from "./requestDetail.js";
+import { estimateUsage, hasValidUsage } from "../../utils/usageTracking.js";
 
 // Responses-API providers (e.g. codex) may emit SSE without content-type + use Responses output shape
 const isResponsesProvider = (p) => PROVIDERS[p]?.format === FORMATS.OPENAI_RESPONSES;
@@ -16,6 +17,16 @@ function textFromResponsesMessageItem(item) {
   const anyText = item.content.find((c) => typeof c.text === "string");
   if (typeof anyText?.text === "string") return anyText.text;
   return "";
+}
+
+function estimateResponsesUsage(body, contentLength) {
+  const estimated = estimateUsage(body, contentLength, FORMATS.OPENAI_RESPONSES);
+  return {
+    input_tokens: estimated?.prompt_tokens || estimated?.input_tokens || 0,
+    output_tokens: estimated?.completion_tokens || estimated?.output_tokens || 0,
+    total_tokens: estimated?.total_tokens || 0,
+    estimated: true
+  };
 }
 
 /**
@@ -122,11 +133,14 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, pr
       const jsonResponse = await convertResponsesStreamToJson(providerResponse.body);
       if (onRequestSuccess) await onRequestSuccess();
 
-      const usage = jsonResponse.usage || {};
+      let usage = jsonResponse.usage || {};
+      const { msgItem, textContent } = pickAssistantMessageForChatCompletion(jsonResponse.output);
+      if (!hasValidUsage(usage)) {
+        usage = estimateResponsesUsage(finalBody || translatedBody || body, (textContent || "").length);
+        jsonResponse.usage = usage;
+      }
       appendLog({ tokens: usage, status: "200 OK" });
       saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint });
-
-      const { msgItem, textContent } = pickAssistantMessageForChatCompletion(jsonResponse.output);
       const totalLatency = Date.now() - requestStartTime;
 
       saveRequestDetail(buildRequestDetail({

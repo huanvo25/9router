@@ -8,6 +8,7 @@ import { buildAbortedResponsesTerminalBytes } from "../../utils/responsesStreamH
 import { buildRequestDetail, extractRequestConfig, saveUsageStats } from "./requestDetail.js";
 import { saveRequestDetail } from "@/lib/usageDb.js";
 import { SSE_HEADERS_CORS as SSE_HEADERS } from "../../utils/sseConstants.js";
+import { estimateUsage, hasValidUsage } from "../../utils/usageTracking.js";
 
 // Codex returns Responses API SSE → which client format to translate INTO, by request sourceFormat.
 // Gemini-family all map to ANTIGRAVITY decoder; unknown sources fall back to OPENAI.
@@ -87,11 +88,14 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
     };
     const safeContent = contentObj?.content || "[Empty streaming response]";
     const safeThinking = contentObj?.thinking || null;
+    const effectiveUsage = hasValidUsage(usage)
+      ? usage
+      : estimateUsage(finalBody || translatedBody || body, `${safeContent || ""}${safeThinking || ""}`.length);
 
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
       latency,
-      tokens: usage || { prompt_tokens: 0, completion_tokens: 0 },
+      tokens: effectiveUsage || { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
       providerRequest: finalBody || translatedBody || null,
       providerResponse: safeContent,
@@ -101,7 +105,7 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
       console.error("[RequestDetail] Failed to update streaming content:", err.message);
     });
 
-    saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, label: "STREAM USAGE" });
+    saveUsageStats({ provider, model, tokens: effectiveUsage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, label: "STREAM USAGE" });
   };
 
   return { onStreamComplete, streamDetailId };
