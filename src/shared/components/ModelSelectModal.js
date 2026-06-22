@@ -47,6 +47,7 @@ export default function ModelSelectModal({
   const [combos, setCombos] = useState([]);
   const [providerNodes, setProviderNodes] = useState([]);
   const [customModels, setCustomModels] = useState([]);
+  const [syncedModelsByProvider, setSyncedModelsByProvider] = useState({});
   const [disabledModels, setDisabledModels] = useState({});
 
   const fetchCombos = async () => {
@@ -97,6 +98,22 @@ export default function ModelSelectModal({
     if (isOpen) fetchCustomModels();
   }, [isOpen]);
 
+  const fetchSyncedModels = async () => {
+    try {
+      const res = await fetch("/api/synced-available-models");
+      if (!res.ok) throw new Error(`Failed to fetch synced models: ${res.status}`);
+      const data = await res.json();
+      setSyncedModelsByProvider(data.models || {});
+    } catch (error) {
+      console.error("Error fetching synced models:", error);
+      setSyncedModelsByProvider({});
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen) fetchSyncedModels();
+  }, [isOpen]);
+
   const fetchDisabledModels = async () => {
     try {
       const res = await fetch("/api/models/disabled");
@@ -134,6 +151,26 @@ export default function ModelSelectModal({
       if (!kindFilter) return models.filter((m) => m.isPlaceholder || m.isCustom || !getModelKind(m) || getModelKind(m) === "llm");
       if (!TYPED_KINDS.has(kindFilter)) return models;
       return models.filter((m) => m.isPlaceholder || getModelKind(m) === kindFilter);
+    };
+
+    const syncedForProvider = (providerId, valuePrefix) => {
+      const syncedModels = Array.isArray(syncedModelsByProvider[providerId])
+        ? syncedModelsByProvider[providerId]
+        : [];
+      return syncedModels
+        .map((m) => {
+          const rawId = m?.id || m?.name || m?.model;
+          if (typeof rawId !== "string" || !rawId.trim()) return null;
+          const id = rawId.trim();
+          return {
+            id,
+            name: m?.name || m?.displayName || m?.display_name || id,
+            value: `${valuePrefix}/${id}`,
+            kind: getModelKind(m),
+            isSynced: true,
+          };
+        })
+        .filter(Boolean);
     };
 
     // Get all active provider IDs from connections (filtered by kindFilter if set)
@@ -215,7 +252,14 @@ export default function ModelSelectModal({
             .filter((m) => !getModelKind(m) || getModelKind(m) === "llm")
             .map((m) => ({ id: m.id, name: m.name, value: `${alias}/${m.id}`, kind: getModelKind(m) }))
             .filter((m) => !seen.has(m.value));
-          combined = [...registeredLlms, ...aliasModels.filter((m) => !registeredLlms.some((registered) => registered.value === m.value)), ...hardcoded];
+          for (const m of hardcoded) seen.add(m.value);
+          const synced = syncedForProvider(providerId, alias).filter((m) => !seen.has(m.value));
+          combined = [
+            ...registeredLlms,
+            ...aliasModels.filter((m) => !registeredLlms.some((registered) => registered.value === m.value)),
+            ...hardcoded,
+            ...synced,
+          ];
         }
 
         if (combined.length > 0) {
@@ -249,9 +293,15 @@ export default function ModelSelectModal({
             value: `${nodePrefix}/${fullModel.replace(`${providerId}/`, "")}`,
           }));
 
+        const nodeModelValues = new Set(nodeModels.map((m) => m.value));
+        const syncedNodeModels = filterByKind(
+          syncedForProvider(providerId, nodePrefix).filter((m) => !nodeModelValues.has(m.value))
+        );
+
         // Always show compatible providers that are connected, even with no aliases.
         // When no aliases exist, show a placeholder so users know it's available.
-        const modelsToShow = nodeModels.length > 0 ? nodeModels : [{
+        const realNodeModels = [...nodeModels, ...syncedNodeModels];
+        const modelsToShow = realNodeModels.length > 0 ? realNodeModels : [{
           id: `__placeholder__${providerId}`,
           name: `${nodePrefix}/model-id`,
           value: `${nodePrefix}/model-id`,
@@ -264,7 +314,7 @@ export default function ModelSelectModal({
           color: providerInfo.color,
           models: modelsToShow,
           isCustom: true,
-          hasModels: nodeModels.length > 0,
+          hasModels: realNodeModels.length > 0,
         };
       } else {
         const hardcodedModels = getModelsByProviderId(providerId);
@@ -290,10 +340,15 @@ export default function ModelSelectModal({
           .filter((m) => m.providerAlias === alias && !hardcodedIds.has(m.id) && !customAliasIds.has(m.id))
           .map((m) => ({ id: m.id, name: m.name || m.id, value: `${alias}/${m.id}`, isCustom: true }));
 
+        const customRegisteredIds = new Set(customRegisteredModels.map((m) => m.id));
+        const syncedModels = syncedForProvider(providerId, alias)
+          .filter((m) => !hardcodedIds.has(m.id) && !customAliasIds.has(m.id) && !customRegisteredIds.has(m.id));
+
         const merged = [
           ...hardcodedModels.map((m) => ({ id: m.id, name: m.name, value: `${alias}/${m.id}`, kind: getModelKind(m) })),
           ...customAliasModels,
           ...customRegisteredModels,
+          ...syncedModels,
         ];
         // Dedupe by value (alias may equal hardcoded id, causing React key collision)
         const seen = new Set();
@@ -336,7 +391,7 @@ export default function ModelSelectModal({
     });
 
     return groups;
-  }, [filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, disabledModels, kindFilter, activeProviders]);
+  }, [filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, syncedModelsByProvider, disabledModels, kindFilter, activeProviders]);
 
   // Filter combos by search query (and hide combos when kindFilter is set — combos are LLM-only by design)
   const filteredCombos = useMemo(() => {
@@ -516,10 +571,10 @@ export default function ModelSelectModal({
                           <span className="material-symbols-outlined text-[11px]">edit</span>
                           {model.name}
                         </>
-                      ) : model.isCustom ? (
+                      ) : model.isCustom || model.isSynced ? (
                         <>
                           {model.name}
-                          <span className="text-[9px] opacity-60 font-normal">custom</span>
+                          <span className="text-[9px] opacity-60 font-normal">{model.isSynced ? "synced" : "custom"}</span>
                           <CapacityBadges caps={getCaps(model.value)} />
                         </>
                       ) : (

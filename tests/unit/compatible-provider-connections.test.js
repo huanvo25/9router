@@ -46,6 +46,7 @@ function makeRequest(provider) {
       provider,
       apiKey: "test-key",
       name: "Test Connection",
+      // Legacy clients may still send this; compatible providers must ignore it.
       defaultModel: "test-model",
     }),
   });
@@ -54,7 +55,7 @@ function makeRequest(provider) {
 function expectCompatibleConnection(connection, node, { apiType } = {}) {
   expect(connection.provider).toBe(node.id);
   expect(connection.authType).toBe("apikey");
-  expect(connection.defaultModel).toBe("test-model");
+  expect(connection.defaultModel).toBeUndefined();
   expect(connection.providerSpecificData).toMatchObject({
     prefix: node.prefix,
     baseUrl: node.baseUrl,
@@ -105,7 +106,6 @@ describe("compatible provider connections API", () => {
     expect(storedConnections[0]).toMatchObject({
       provider: ctx.node.id,
       authType: "apikey",
-      defaultModel: "test-model",
       providerSpecificData: {
         prefix: ctx.node.prefix,
         apiType: "chat",
@@ -136,7 +136,6 @@ describe("compatible provider connections API", () => {
     expect(storedConnections[0]).toMatchObject({
       provider: ctx.node.id,
       authType: "apikey",
-      defaultModel: "test-model",
       providerSpecificData: {
         prefix: ctx.node.prefix,
         baseUrl: ctx.node.baseUrl,

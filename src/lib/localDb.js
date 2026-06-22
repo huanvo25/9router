@@ -19,5 +19,6 @@ export {
   replaceSyncedAvailableModels, clearSyncedAvailableModels,
   getMitmAlias, setMitmAliasAll,
   getPricing, getPricingForModel, updatePricing, resetPricing, resetAllPricing,
+  getUsageHistory,
   exportDb, importDb,
 } from "@/lib/db/index.js";

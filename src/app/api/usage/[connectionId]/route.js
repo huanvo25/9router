@@ -1,7 +1,7 @@
 // Ensure proxyFetch is loaded to patch globalThis.fetch
 import "open-sse/index.js";
 
-import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
+import { getProviderConnectionById, getUsageHistory, updateProviderConnection } from "@/lib/localDb";
 import { getUsageForProvider } from "open-sse/services/usage.js";
 import { getExecutor } from "open-sse/executors/index.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
@@ -13,6 +13,110 @@ function isAuthExpiredMessage(usage) {
   if (!usage?.message) return false;
   const msg = usage.message.toLowerCase();
   return AUTH_EXPIRED_PATTERNS.some((p) => msg.includes(p));
+}
+
+const ANTIGRAVITY_LOCAL_USAGE_TOKEN_UNIT = 1000;
+const ANTIGRAVITY_LOCAL_USAGE_REQUEST_UNIT = 25;
+
+function getAntigravityQuotaWindowStart(usage) {
+  const resetTimes = Object.values(usage?.quotas || {})
+    .map((quota) => quota?.resetAt ? new Date(quota.resetAt).getTime() : null)
+    .filter((time) => Number.isFinite(time));
+  if (resetTimes.length > 0) {
+    return new Date(Math.min(...resetTimes) - 24 * 60 * 60 * 1000).toISOString();
+  }
+  return new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+}
+
+function normalizeAntigravityModelId(model) {
+  return String(model || "")
+    .replace(/^antigravity\//, "")
+    .replace(/^ag\//, "")
+    .replace(/^models\//, "");
+}
+
+function getUsageEntryTotalTokens(entry) {
+  const tokens = entry?.tokens || {};
+  const total = Number(tokens.total_tokens ?? tokens.totalTokens);
+  if (Number.isFinite(total) && total > 0) return total;
+  const prompt = Number(tokens.prompt_tokens ?? tokens.promptTokens) || 0;
+  const completion = Number(tokens.completion_tokens ?? tokens.completionTokens) || 0;
+  return prompt + completion;
+}
+
+async function applyAntigravityLocalUsageOverlay(connection, usage) {
+  if (connection.provider !== "antigravity" || !usage?.quotas) return usage;
+
+  const startDate = getAntigravityQuotaWindowStart(usage);
+  const history = await getUsageHistory({
+    provider: "antigravity",
+    startDate,
+  });
+
+  const localUsageByModel = {};
+  const seen = new Set();
+  for (const entry of history || []) {
+    if (entry.connectionId !== connection.id) continue;
+    if (entry.status && !["ok", "success"].includes(String(entry.status).toLowerCase())) continue;
+
+    const modelKey = normalizeAntigravityModelId(entry.model);
+    if (!modelKey) continue;
+
+    const totalTokens = getUsageEntryTotalTokens(entry);
+    const minute = entry.timestamp ? String(entry.timestamp).slice(0, 16) : "";
+    const exactTime = entry.timestamp || "";
+    const dedupeKey = totalTokens > 0
+      ? `${modelKey}|${totalTokens}|${minute}`
+      : `${modelKey}|0|${exactTime}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    if (!localUsageByModel[modelKey]) localUsageByModel[modelKey] = { tokens: 0, requests: 0 };
+    localUsageByModel[modelKey].tokens += Math.max(0, totalTokens);
+    localUsageByModel[modelKey].requests += 1;
+  }
+
+  if (Object.keys(localUsageByModel).length === 0) return usage;
+
+  const quotas = { ...usage.quotas };
+  for (const [quotaKey, quota] of Object.entries(quotas)) {
+    const localUsage = localUsageByModel[quotaKey];
+    if (!localUsage) continue;
+
+    const total = Number(quota.total) > 0 ? Number(quota.total) : 1000;
+    const providerUsed = Number(quota.used) || 0;
+    const providerRemaining = Number(quota.remainingPercentage);
+    const upstreamLooksStale = providerUsed <= 0
+      && (!Number.isFinite(providerRemaining) || providerRemaining >= 99.9);
+    if (!upstreamLooksStale) continue;
+
+    const tokenUsed = Math.ceil(localUsage.tokens / ANTIGRAVITY_LOCAL_USAGE_TOKEN_UNIT);
+    const requestUsed = Math.ceil(localUsage.requests / ANTIGRAVITY_LOCAL_USAGE_REQUEST_UNIT);
+    const localUsed = Math.min(total, Math.max(tokenUsed, requestUsed));
+    if (localUsed <= providerUsed) continue;
+
+    const used = localUsed;
+    const remainingPercentage = Math.max(0, ((total - used) / total) * 100);
+    quotas[quotaKey] = {
+      ...quota,
+      used,
+      total,
+      remainingPercentage: Math.min(
+        Number.isFinite(Number(quota.remainingPercentage)) ? Number(quota.remainingPercentage) : 100,
+        remainingPercentage,
+      ),
+      localUsageOverlay: {
+        tokenUnit: ANTIGRAVITY_LOCAL_USAGE_TOKEN_UNIT,
+        requestUnit: ANTIGRAVITY_LOCAL_USAGE_REQUEST_UNIT,
+        tokens: localUsage.tokens,
+        requests: localUsage.requests,
+        usedUnits: used,
+        since: startDate,
+      },
+    };
+  }
+
+  return { ...usage, quotas };
 }
 
 /**
@@ -169,6 +273,7 @@ export async function GET(request, { params }) {
 
     // Fetch usage from provider API
     let usage = await getUsageForProvider(connection, proxyOptions);
+    usage = await applyAntigravityLocalUsageOverlay(connection, usage);
 
     // If provider returned an auth-expired message instead of throwing,
     // force-refresh token and retry once (OAuth only)
@@ -177,6 +282,7 @@ export async function GET(request, { params }) {
         const retryResult = await refreshAndUpdateCredentials(connection, true, proxyOptions);
         connection = retryResult.connection;
         usage = await getUsageForProvider(connection, proxyOptions);
+        usage = await applyAntigravityLocalUsageOverlay(connection, usage);
       } catch (retryError) {
         console.warn(`[Usage] ${connection.provider}: force refresh failed: ${retryError.message}`);
       }
