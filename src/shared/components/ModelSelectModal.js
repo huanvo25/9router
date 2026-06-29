@@ -298,9 +298,24 @@ export default function ModelSelectModal({
           syncedForProvider(providerId, nodePrefix).filter((m) => !nodeModelValues.has(m.value))
         );
 
+        // Merge custom models registered via /api/models/custom for this provider.
+        // providerAlias in DB uses the raw providerId, not the display prefix.
+        const registeredCustom = customModels
+          .filter((m) => m.providerAlias === providerId)
+          .map((m) => ({
+            id: m.id,
+            name: m.name || m.id,
+            value: `${nodePrefix}/${m.id}`,
+            isCustom: true,
+          }));
+        const seenSynced = new Set(syncedNodeModels.map((m) => m.value));
+        const registeredCustomModels = registeredCustom.filter(
+          (m) => !nodeModelValues.has(m.value) && !seenSynced.has(m.value)
+        );
+
         // Always show compatible providers that are connected, even with no aliases.
         // When no aliases exist, show a placeholder so users know it's available.
-        const realNodeModels = [...nodeModels, ...syncedNodeModels];
+        const realNodeModels = [...nodeModels, ...syncedNodeModels, ...registeredCustomModels];
         const modelsToShow = realNodeModels.length > 0 ? realNodeModels : [{
           id: `__placeholder__${providerId}`,
           name: `${nodePrefix}/model-id`,
