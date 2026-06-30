@@ -2,6 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { nowSec } from "./_base.js";
 import { PROVIDERS } from "../../config/providers.js";
+import { getModelUpstreamId } from "../../config/providerModels.js";
 
 const CODEX_RESPONSES_URL = PROVIDERS["codex"].baseUrl;
 const CODEX_USER_AGENT = "codex_cli_rs/0.136.0";
@@ -25,6 +26,11 @@ function decodeAccountId(idToken) {
 
 function stripImageSuffix(model) {
   return model.endsWith(CODEX_MODEL_SUFFIX) ? model.slice(0, -CODEX_MODEL_SUFFIX.length) : model;
+}
+
+function resolveCodexImageBaseModel(model) {
+  const upstreamModel = getModelUpstreamId("cx", model) || model;
+  return stripImageSuffix(upstreamModel);
 }
 
 function toDataUrl(input) {
@@ -172,7 +178,7 @@ export default {
     if (body.quality && body.quality !== "") imgTool.quality = body.quality;
     if (body.background && body.background !== "") imgTool.background = body.background;
     return {
-      model: stripImageSuffix(model),
+      model: resolveCodexImageBaseModel(model),
       instructions: "",
       input: [{ type: "message", role: "user", content: buildContent(body.prompt, refs, detail) }],
       tools: [imgTool],

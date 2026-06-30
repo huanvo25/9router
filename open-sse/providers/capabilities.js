@@ -84,6 +84,7 @@ export const MODEL_CAPABILITIES = {
   "claude-sonnet-4-6": { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 },
 
   // Gemini image-gen / OpenAI image / xai image variants
+  "gpt-image-2":       { imageOutput: true, tools: false },
   "gpt-image-1":       { imageOutput: true, tools: false },
 
   // GLM vision variant (text GLM has no vision)

@@ -367,6 +367,45 @@ describe("handleImageGenerationCore", () => {
     expect(responseBody.data[0].b64_json).toBe("base64codeximage");
   });
 
+  it("maps Codex gpt-image-2 compatibility alias to the supported image base model", async () => {
+    global.fetch.mockResolvedValueOnce(
+      new Response(
+        [
+          "event: response.output_item.done",
+          'data: {"item":{"type":"image_generation_call","result":"base64codeximage2"}}',
+          "",
+          "",
+        ].join("\n"),
+        { status: 200, headers: { "Content-Type": "text/event-stream" } }
+      )
+    );
+
+    const result = await handleImageGenerationCore({
+      body: {
+        prompt: "A blue circle",
+        output_format: "png",
+      },
+      modelInfo: { provider: "codex", model: "gpt-image-2" },
+      credentials: {
+        accessToken: "codex-token",
+        providerSpecificData: { chatgptAccountId: "account-123" },
+      },
+      log: null,
+    });
+
+    expect(result.success).toBe(true);
+
+    const fetchCall = global.fetch.mock.calls[0];
+    const requestBody = JSON.parse(fetchCall[1].body);
+    expect(requestBody.model).toBe("gpt-5.5");
+    expect(requestBody.tools).toEqual([
+      { type: "image_generation", output_format: "png" },
+    ]);
+
+    const responseBody = await result.response.json();
+    expect(responseBody.data[0].b64_json).toBe("base64codeximage2");
+  });
+
   it("generates image with Cloudflare Workers AI JSON response", async () => {
     global.fetch.mockResolvedValueOnce(
       new Response(
