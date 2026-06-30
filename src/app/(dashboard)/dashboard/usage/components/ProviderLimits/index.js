@@ -54,6 +54,16 @@ const KIRO_METHOD_LABELS = {
   api_key: "API Key",
 };
 
+const AUTO_PING_SETTINGS_KEYS = {
+  claude: "claudeAutoPing",
+  codex: "codexAutoPing",
+};
+
+const AUTO_PING_TOOLTIPS = {
+  claude: "When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.",
+  codex: "Auto-starts the next 5h Codex window after reset by sending a tiny gpt-5.5 request. Consumes a small amount of quota.",
+};
+
 function kiroMethodLabel(conn) {
   const m = conn.providerSpecificData?.authMethod;
   if (m && KIRO_METHOD_LABELS[m]) return KIRO_METHOD_LABELS[m];
@@ -272,7 +282,7 @@ export default function ProviderLimits() {
   const [loading, setLoading] = useState({});
   const [errors, setErrors] = useState({});
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [autoPingMap, setAutoPingMap] = useState({});
+  const [autoPingMaps, setAutoPingMaps] = useState({ claude: {}, codex: {} });
   const [lastUpdated, setLastUpdated] = useState(null);
   const [hasHydratedAutoRefresh, setHasHydratedAutoRefresh] = useState(false);
   const [refreshingAll, setRefreshingAll] = useState(false);
@@ -693,30 +703,38 @@ export default function ProviderLimits() {
     window.localStorage.setItem(AUTO_REFRESH_STORAGE_KEY, String(autoRefresh));
   }, [autoRefresh, hasHydratedAutoRefresh]);
 
-  // Load Claude auto-ping per-connection map
+  // Load auto-ping per-connection maps
   useEffect(() => {
     fetch("/api/settings", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : {}))
-      .then((s) => setAutoPingMap(s?.claudeAutoPing?.connections || {}))
+      .then((s) => setAutoPingMaps({
+        claude: s?.claudeAutoPing?.connections || {},
+        codex: s?.codexAutoPing?.connections || {},
+      }))
       .catch(() => {});
   }, []);
 
-  const toggleAutoPing = useCallback(async (connectionId, on) => {
-    const next = { ...autoPingMap, [connectionId]: on };
-    setAutoPingMap(next);
+  const toggleAutoPing = useCallback(async (connectionId, provider, on) => {
+    const settingsKey = AUTO_PING_SETTINGS_KEYS[provider];
+    if (!settingsKey) return;
+
+    const previous = autoPingMaps;
+    const nextProviderMap = { ...(autoPingMaps[provider] || {}), [connectionId]: on };
+    const nextMaps = { ...autoPingMaps, [provider]: nextProviderMap };
+    setAutoPingMaps(nextMaps);
     try {
       const r = await fetch("/api/settings", { cache: "no-store" });
       const s = r.ok ? await r.json() : {};
-      const cfg = { ...(s.claudeAutoPing || {}), connections: next };
+      const cfg = { ...(s[settingsKey] || {}), connections: nextProviderMap };
       await fetch("/api/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ claudeAutoPing: cfg }),
+        body: JSON.stringify({ [settingsKey]: cfg }),
       });
     } catch {
-      setAutoPingMap(autoPingMap);
+      setAutoPingMaps(previous);
     }
-  }, [autoPingMap]);
+  }, [autoPingMaps]);
 
   // Auto-refresh interval
   useEffect(() => {
@@ -1296,13 +1314,13 @@ export default function ProviderLimits() {
                                 </button>
                               </Tooltip>
                             )}
-                            {conn.provider === "claude" && conn.authType === "oauth" && (
-                              <Tooltip text="When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.">
+                            {AUTO_PING_SETTINGS_KEYS[conn.provider] && conn.authType === "oauth" && (
+                              <Tooltip text={AUTO_PING_TOOLTIPS[conn.provider]}>
                                 <button
                                   type="button"
-                                  onClick={() => toggleAutoPing(conn.id, !(autoPingMap[conn.id] === true))}
+                                  onClick={() => toggleAutoPing(conn.id, conn.provider, !(autoPingMaps[conn.provider]?.[conn.id] === true))}
                                   aria-label="Toggle auto-ping"
-                                  className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${autoPingMap[conn.id] === true ? "text-primary" : "text-text-muted"}`}
+                                  className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${autoPingMaps[conn.provider]?.[conn.id] === true ? "text-primary" : "text-text-muted"}`}
                                 >
                                   <span className="material-symbols-outlined text-[16px]">bolt</span>
                                 </button>

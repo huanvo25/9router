@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSettings, updateSettings } from "@/lib/localDb";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
 import { resetComboRotation } from "open-sse/services/combo.js";
+import { runQuotaAutoPingTick } from "@/shared/services/quotaAutoPing";
 import bcrypt from "bcryptjs";
 
 export const dynamic = "force-dynamic";
@@ -76,6 +77,22 @@ export async function PATCH(request) {
       }
     }
 
+    // Validate modelRedirects is a plain object of string -> string
+    if (Object.prototype.hasOwnProperty.call(body, "modelRedirects")) {
+      const redirects = body.modelRedirects;
+      if (redirects !== null && typeof redirects === "object" && !Array.isArray(redirects)) {
+        const cleaned = {};
+        for (const [key, val] of Object.entries(redirects)) {
+          if (typeof key === "string" && typeof val === "string" && key.trim() && val.trim()) {
+            cleaned[key.trim()] = val.trim();
+          }
+        }
+        body.modelRedirects = cleaned;
+      } else {
+        delete body.modelRedirects;
+      }
+    }
+
     const settings = await updateSettings(body);
 
     // Apply outbound proxy settings immediately (no restart required)
@@ -96,20 +113,14 @@ export async function PATCH(request) {
       resetComboRotation();
     }
 
-    // Validate modelRedirects is a plain object of string -> string
-    if (Object.prototype.hasOwnProperty.call(body, "modelRedirects")) {
-      const redirects = body.modelRedirects;
-      if (redirects !== null && typeof redirects === "object" && !Array.isArray(redirects)) {
-        const cleaned = {};
-        for (const [key, val] of Object.entries(redirects)) {
-          if (typeof key === "string" && typeof val === "string" && key.trim() && val.trim()) {
-            cleaned[key.trim()] = val.trim();
-          }
-        }
-        body.modelRedirects = cleaned;
-      } else {
-        delete body.modelRedirects;
-      }
+    if (
+      Object.prototype.hasOwnProperty.call(body, "claudeAutoPing") ||
+      Object.prototype.hasOwnProperty.call(body, "codexAutoPing")
+    ) {
+      // Run once immediately after opt-in changes so users don't wait for the next scheduler tick.
+      runQuotaAutoPingTick().catch((error) => {
+        console.warn("[AutoPing] settings-triggered tick failed:", error.message);
+      });
     }
 
     const { password, oidcClientSecret, ...safeSettings } = settings;
