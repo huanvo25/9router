@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import PropTypes from "prop-types";
 import Modal from "./Modal";
+import Button from "./Button";
 import ProviderIcon from "./ProviderIcon";
 import CapacityBadges from "./CapacityBadges";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
@@ -19,6 +20,57 @@ const PROVIDER_ORDER = [
 
 // Providers that need no auth — always show in model selector
 const NO_AUTH_PROVIDER_IDS = Object.keys(FREE_PROVIDERS).filter(id => FREE_PROVIDERS[id].noAuth);
+const MODEL_TEST_SESSION_KEY = "9router:model-select-test-session:v1";
+const TERMINAL_TEST_STATES = new Set(["ok", "failed"]);
+
+function loadStoredTestSession() {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const raw = window.localStorage.getItem(MODEL_TEST_SESSION_KEY);
+    if (!raw) return null;
+
+    const stored = JSON.parse(raw);
+    const results = {};
+    Object.entries(stored.results || {}).forEach(([value, result]) => {
+      if (!result || typeof result !== "object") return;
+      const staleRunning = result.state === "running" || result.state === "queued";
+      results[value] = {
+        ...result,
+        state: staleRunning ? "stopped" : result.state,
+      };
+    });
+
+    return {
+      results,
+      progress: {
+        done: Number(stored.progress?.done) || 0,
+        total: Number(stored.progress?.total) || 0,
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+function countFinishedResults(models, results) {
+  return models.filter((model) => TERMINAL_TEST_STATES.has(results[model.value]?.state)).length;
+}
+
+function isFreePassedModel(model) {
+  if (!model) return false;
+  const providerId = model.providerId;
+  const provider = AI_PROVIDERS[providerId];
+  const searchable = `${model.value || ""} ${model.id || ""} ${model.name || ""}`.toLowerCase();
+
+  return Boolean(
+    FREE_PROVIDERS[providerId] ||
+    FREE_TIER_PROVIDERS[providerId] ||
+    provider?.hasFree ||
+    searchable.includes(":free") ||
+    searchable.includes(" free")
+  );
+}
 
 export default function ModelSelectModal({
   isOpen,
@@ -32,6 +84,7 @@ export default function ModelSelectModal({
   kindFilter = null,
   addedModelValues = [],
   closeOnSelect = true,
+  enableModelTesting = false,
 }) {
   // Filter activeProviders by serviceKinds when kindFilter set (e.g. "webSearch", "webFetch")
   const filteredActiveProviders = useMemo(() => {
@@ -49,6 +102,10 @@ export default function ModelSelectModal({
   const [customModels, setCustomModels] = useState([]);
   const [syncedModelsByProvider, setSyncedModelsByProvider] = useState({});
   const [disabledModels, setDisabledModels] = useState({});
+  const [testResults, setTestResults] = useState(() => loadStoredTestSession()?.results || {});
+  const [testingAll, setTestingAll] = useState(false);
+  const [testProgress, setTestProgress] = useState(() => loadStoredTestSession()?.progress || { done: 0, total: 0 });
+  const testRunRef = useRef(0);
 
   const fetchCombos = async () => {
     try {
@@ -129,6 +186,18 @@ export default function ModelSelectModal({
   useEffect(() => {
     if (isOpen) fetchDisabledModels();
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!enableModelTesting || typeof window === "undefined") return;
+    window.localStorage.setItem(
+      MODEL_TEST_SESSION_KEY,
+      JSON.stringify({
+        results: testResults,
+        progress: testProgress,
+        savedAt: new Date().toISOString(),
+      })
+    );
+  }, [enableModelTesting, testResults, testProgress]);
 
   const allProviders = useMemo(() => ({ ...OAUTH_PROVIDERS, ...FREE_PROVIDERS, ...FREE_TIER_PROVIDERS, ...APIKEY_PROVIDERS }), []);
 
@@ -448,6 +517,201 @@ export default function ModelSelectModal({
     return filtered;
   }, [groupedModels, searchQuery, addedModelValues]);
 
+  const flatModelOptions = useMemo(() => {
+    const seen = new Set();
+    const rows = [];
+
+    if (!kindFilter) {
+      filteredCombos.forEach((combo) => {
+        const value = combo.name;
+        if (!value || seen.has(value)) return;
+        seen.add(value);
+        rows.push({
+          id: value,
+          name: value,
+          value,
+          kind: "llm",
+          groupName: "Combos",
+          providerId: "combos",
+          isCombo: true,
+        });
+      });
+    }
+
+    Object.entries(filteredGroups).forEach(([providerId, group]) => {
+      group.models.forEach((model) => {
+        if (!model?.value || model.isPlaceholder || seen.has(model.value)) return;
+        seen.add(model.value);
+        rows.push({
+          ...model,
+          kind: model.kind || getModelKind(model) || kindFilter || "llm",
+          groupName: group.name,
+          providerId,
+        });
+      });
+    });
+
+    return rows;
+  }, [filteredCombos, filteredGroups, kindFilter]);
+
+  const testStats = useMemo(() => {
+    let ok = 0;
+    let failed = 0;
+    let running = 0;
+    flatModelOptions.forEach((model) => {
+      const state = testResults[model.value]?.state;
+      if (state === "ok") ok += 1;
+      else if (state === "failed") failed += 1;
+      else if (state === "running" || state === "queued") running += 1;
+    });
+    return {
+      ok,
+      failed,
+      running,
+      untested: Math.max(0, flatModelOptions.length - ok - failed - running),
+    };
+  }, [flatModelOptions, testResults]);
+
+  const workingModels = useMemo(
+    () => flatModelOptions.filter((model) => testResults[model.value]?.state === "ok"),
+    [flatModelOptions, testResults]
+  );
+
+  const freePassedModels = useMemo(
+    () => workingModels.filter(isFreePassedModel),
+    [workingModels]
+  );
+
+  const hasTestHistory = useMemo(
+    () => flatModelOptions.some((model) => !!testResults[model.value]),
+    [flatModelOptions, testResults]
+  );
+
+  const resumableCount = useMemo(
+    () => flatModelOptions.filter((model) => !TERMINAL_TEST_STATES.has(testResults[model.value]?.state)).length,
+    [flatModelOptions, testResults]
+  );
+
+  const stopTesting = () => {
+    testRunRef.current += 1;
+    setTestingAll(false);
+    setTestResults((prev) => {
+      const next = { ...prev };
+      Object.entries(next).forEach(([value, result]) => {
+        if (result?.state === "running" || result?.state === "queued") {
+          next[value] = { ...result, state: "stopped" };
+        }
+      });
+      return next;
+    });
+  };
+
+  const testOneModel = async (model, runId) => {
+    setTestResults((prev) => ({
+      ...prev,
+      [model.value]: {
+        ...(prev[model.value] || {}),
+        state: "running",
+        name: model.name,
+        groupName: model.groupName,
+        value: model.value,
+      },
+    }));
+
+    try {
+      const res = await fetch("/api/models/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: model.value, kind: model.kind || kindFilter || "llm" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (testRunRef.current !== runId) return;
+      const ok = res.ok && data.ok === true;
+      setTestResults((prev) => ({
+        ...prev,
+        [model.value]: {
+          state: ok ? "ok" : "failed",
+          name: model.name,
+          groupName: model.groupName,
+          value: model.value,
+          latencyMs: data.latencyMs,
+          hasOutput: !!data.hasOutput,
+          sampleText: data.sampleText || "",
+          error: ok ? null : data.error || `HTTP ${res.status}`,
+        },
+      }));
+    } catch (error) {
+      if (testRunRef.current !== runId) return;
+      setTestResults((prev) => ({
+        ...prev,
+        [model.value]: {
+          state: "failed",
+          name: model.name,
+          groupName: model.groupName,
+          value: model.value,
+          error: error.message || "Test failed",
+        },
+      }));
+    } finally {
+      if (testRunRef.current === runId) {
+        setTestProgress((prev) => ({ ...prev, done: Math.min(prev.total, prev.done + 1) }));
+      }
+    }
+  };
+
+  const runModelTests = async ({ resetHistory = true } = {}) => {
+    const allCandidates = flatModelOptions.filter((model) => model.value && !model.isPlaceholder);
+    const candidates = resetHistory
+      ? allCandidates
+      : allCandidates.filter((model) => !TERMINAL_TEST_STATES.has(testResults[model.value]?.state));
+    if (allCandidates.length === 0 || candidates.length === 0 || testingAll) return;
+
+    const runId = testRunRef.current + 1;
+    testRunRef.current = runId;
+    setTestingAll(true);
+    setTestProgress({
+      done: resetHistory ? 0 : countFinishedResults(allCandidates, testResults),
+      total: allCandidates.length,
+    });
+    setTestResults((prev) => {
+      const next = resetHistory ? {} : { ...prev };
+      candidates.forEach((model) => {
+        next[model.value] = {
+          state: "queued",
+          name: model.name,
+          groupName: model.groupName,
+          value: model.value,
+        };
+      });
+      return next;
+    });
+
+    const queue = [...candidates];
+    const workerCount = Math.min(4, queue.length);
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (queue.length > 0 && testRunRef.current === runId) {
+        const model = queue.shift();
+        await testOneModel(model, runId);
+      }
+    }));
+
+    if (testRunRef.current === runId) setTestingAll(false);
+  };
+
+  const continueModelTests = () => runModelTests({ resetHistory: false });
+
+  const handleAddWorkingModels = () => {
+    workingModels
+      .filter((model) => !addedModelValues.includes(model.value))
+      .forEach((model) => onSelect(model));
+  };
+
+  const handleAddFreePassedModels = () => {
+    freePassedModels
+      .filter((model) => !addedModelValues.includes(model.value))
+      .forEach((model) => onSelect(model));
+  };
+
   const handleSelect = (model) => {
     const value = model?.value || model?.name || model;
     const isAdded = addedModelValues.includes(value);
@@ -464,6 +728,39 @@ export default function ModelSelectModal({
     }
   };
 
+  const renderTestBadge = (model) => {
+    if (!enableModelTesting || !model?.value || model.isPlaceholder) return null;
+    const result = testResults[model.value];
+    if (!result) return null;
+
+    const badgeClass = {
+      queued: "text-text-muted bg-surface-2 border-border",
+      running: "text-blue-500 bg-blue-500/10 border-blue-500/20",
+      ok: "text-emerald-500 bg-emerald-500/10 border-emerald-500/25",
+      failed: "text-red-500 bg-red-500/10 border-red-500/25",
+      stopped: "text-text-muted bg-surface-2 border-border",
+    }[result.state] || "text-text-muted bg-surface-2 border-border";
+
+    const icon = {
+      queued: "schedule",
+      running: "progress_activity",
+      ok: "check_circle",
+      failed: "error",
+      stopped: "pause_circle",
+    }[result.state] || "help";
+
+    return (
+      <span
+        className={`inline-flex h-4 min-w-4 items-center justify-center rounded-full border px-0.5 ${badgeClass}`}
+        title={result.error || result.sampleText || (result.latencyMs ? `${result.latencyMs}ms` : result.state)}
+      >
+        <span className={`material-symbols-outlined text-[11px] leading-none ${result.state === "running" ? "animate-spin" : ""}`}>
+          {icon}
+        </span>
+      </span>
+    );
+  };
+
   return (
     <Modal
       isOpen={isOpen}
@@ -472,147 +769,283 @@ export default function ModelSelectModal({
         setSearchQuery("");
       }}
       title={title}
-      size="md"
-      className="p-4!"
+      size={enableModelTesting ? "wide" : "md"}
+      className={enableModelTesting ? "flex h-[calc(100vh-1rem)] flex-col overflow-hidden sm:h-[calc(100vh-2rem)]" : "p-4!"}
+      bodyClassName={enableModelTesting ? "p-0 max-h-none min-h-0 flex-1 overflow-hidden" : undefined}
       footer={null}
     >
-      {/* Info bar */}
-      <div className="flex items-center gap-2 mb-3 px-2.5 py-2 bg-primary/8 border border-primary/20 rounded-lg text-xs text-text-muted">
-        <span className="material-symbols-outlined text-primary shrink-0" style={{ fontSize: "14px" }}>info</span>
-        <span>Click to add, click again to remove. Changes are saved automatically.</span>
-      </div>
-
-      {/* Search - compact */}
-      <div className="mb-3">
-        <div className="relative">
-          <span className="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted text-[16px]">
-            search
-          </span>
-          <input
-            type="text"
-            placeholder="Search..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-8 pr-3 py-1.5 bg-surface border border-border rounded text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
-          />
-        </div>
-      </div>
-
-      {/* Models grouped by provider - compact */}
-      <div className="max-h-[400px] overflow-y-auto space-y-3">
-        {/* Combos section - always first */}
-        {filteredCombos.length > 0 && (
-          <div>
-            <div className="flex items-center gap-1.5 mb-1.5 sticky top-0 bg-surface py-0.5">
-              <span className="material-symbols-outlined text-primary text-[14px]">layers</span>
-              <span className="text-xs font-medium text-primary">Combos</span>
-              <span className="text-[10px] text-text-muted">({filteredCombos.length})</span>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {filteredCombos.map((combo) => {
-                const isSelected = selectedModel === combo.name;
-                return (
-                  <button
-                    key={combo.id}
-                    onClick={() => handleSelect({ id: combo.name, name: combo.name, value: combo.name })}
-                    className={`
-                      px-2 py-1 rounded-xl text-xs font-medium transition-all border hover:cursor-pointer flex items-center gap-1
-                      ${isSelected
-                        ? "bg-primary text-white border-primary"
-                        : addedModelValues.includes(combo.name)
-                          ? "bg-primary border-primary text-white hover:bg-primary-hover"
-                          : "bg-surface border-border text-text-main hover:border-primary/50 hover:bg-primary/5"
-                      }
-                    `}
-                  >
-                    {addedModelValues.includes(combo.name) && (
-                      <span className="material-symbols-outlined leading-none" style={{ fontSize: "10px" }}>check</span>
-                    )}
-                    {combo.name}
-                  </button>
-                );
-              })}
-            </div>
+      <div className={enableModelTesting ? "grid min-h-full grid-cols-1 overflow-y-auto lg:h-full lg:min-h-0 lg:grid-cols-[minmax(0,1fr)_360px] lg:overflow-hidden xl:grid-cols-[minmax(0,1fr)_400px]" : ""}>
+        <div className={enableModelTesting ? "flex min-h-[460px] flex-col p-4 sm:p-5 lg:min-h-0" : ""}>
+          {/* Info bar */}
+          <div className="flex items-center gap-2 mb-3 px-2.5 py-2 bg-primary/8 border border-primary/20 rounded-lg text-xs text-text-muted">
+            <span className="material-symbols-outlined text-primary shrink-0" style={{ fontSize: "14px" }}>info</span>
+            <span>Click to add, click again to remove. Changes are saved automatically.</span>
           </div>
-        )}
 
-        {/* Provider models */}
-        {Object.entries(filteredGroups).map(([providerId, group]) => (
-          <div key={providerId}>
-            {/* Provider header */}
-            <div className="flex items-center gap-1.5 mb-1.5 sticky top-0 bg-surface py-0.5">
-              <ProviderIcon
-                src={`/providers/${providerId}.png`}
-                alt={group.name}
-                size={14}
-                fallbackText={(group.name || providerId).slice(0, 2).toUpperCase()}
-                fallbackColor={group.color}
+          {/* Search - compact */}
+          <div className="mb-3">
+            <div className="relative">
+              <span className="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted text-[16px]">
+                search
+              </span>
+              <input
+                type="text"
+                placeholder="Search..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-8 pr-3 py-1.5 bg-surface border border-border rounded text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
               />
-              <span className="text-xs font-medium text-primary">
-                {group.name}
-              </span>
-              <span className="text-[10px] text-text-muted">
-                ({group.models.length})
-              </span>
             </div>
+          </div>
 
-            <div className="flex flex-wrap gap-1.5">
-              {group.models.map((model) => {
-                const isSelected = selectedModel === model.value;
-                const isPlaceholder = model.isPlaceholder;
-                return (
-                  <button
-                    key={model.value}
-                    onClick={() => handleSelect(model)}
-                    title={isPlaceholder ? "Select to pre-fill, then edit model ID in the input" : undefined}
-                    className={`
-                      px-2 py-1 rounded-xl text-xs font-medium transition-all border hover:cursor-pointer
-                      ${isPlaceholder
-                        ? "border-dashed border-border text-text-muted hover:border-primary/50 hover:text-primary bg-surface italic"
-                        : isSelected
-                          ? "bg-primary text-white border-primary"
-                          : addedModelValues.includes(model.value)
-                            ? "bg-primary border-primary text-white hover:bg-primary-hover"
-                            : "bg-surface border-border text-text-main hover:border-primary/50 hover:bg-primary/5"
-                      }
-                    `}
+          {/* Models grouped by provider - compact */}
+          <div className={`${enableModelTesting ? "min-h-0 flex-1" : "max-h-[400px]"} overflow-y-auto space-y-3 pr-1 custom-scrollbar`}>
+            {/* Combos section - always first */}
+            {filteredCombos.length > 0 && (
+              <div>
+                <div className="flex items-center gap-1.5 mb-1.5 sticky top-0 z-10 bg-surface py-0.5">
+                  <span className="material-symbols-outlined text-primary text-[14px]">layers</span>
+                  <span className="text-xs font-medium text-primary">Combos</span>
+                  <span className="text-[10px] text-text-muted">({filteredCombos.length})</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {filteredCombos.map((combo) => {
+                    const comboModel = { id: combo.name, name: combo.name, value: combo.name, kind: "llm" };
+                    const isSelected = selectedModel === combo.name;
+                    return (
+                      <button
+                        key={combo.id}
+                        onClick={() => handleSelect(comboModel)}
+                        className={`
+                          px-2 py-1 rounded-xl text-xs font-medium transition-all border hover:cursor-pointer flex items-center gap-1
+                          ${isSelected
+                            ? "bg-primary text-white border-primary"
+                            : addedModelValues.includes(combo.name)
+                              ? "bg-primary border-primary text-white hover:bg-primary-hover"
+                              : "bg-surface border-border text-text-main hover:border-primary/50 hover:bg-primary/5"
+                          }
+                        `}
+                      >
+                        {addedModelValues.includes(combo.name) && (
+                          <span className="material-symbols-outlined leading-none" style={{ fontSize: "10px" }}>check</span>
+                        )}
+                        {combo.name}
+                        {renderTestBadge(comboModel)}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Provider models */}
+            {Object.entries(filteredGroups).map(([providerId, group]) => (
+              <div key={providerId}>
+                {/* Provider header */}
+                <div className="flex items-center gap-1.5 mb-1.5 sticky top-0 z-10 bg-surface py-0.5">
+                  <ProviderIcon
+                    src={`/providers/${providerId}.png`}
+                    alt={group.name}
+                    size={14}
+                    fallbackText={(group.name || providerId).slice(0, 2).toUpperCase()}
+                    fallbackColor={group.color}
+                  />
+                  <span className="text-xs font-medium text-primary">
+                    {group.name}
+                  </span>
+                  <span className="text-[10px] text-text-muted">
+                    ({group.models.length})
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap gap-1.5">
+                  {group.models.map((model) => {
+                    const isSelected = selectedModel === model.value;
+                    const isPlaceholder = model.isPlaceholder;
+                    return (
+                      <button
+                        key={model.value}
+                        onClick={() => handleSelect(model)}
+                        title={isPlaceholder ? "Select to pre-fill, then edit model ID in the input" : undefined}
+                        className={`
+                          px-2 py-1 rounded-xl text-xs font-medium transition-all border hover:cursor-pointer
+                          ${isPlaceholder
+                            ? "border-dashed border-border text-text-muted hover:border-primary/50 hover:text-primary bg-surface italic"
+                            : isSelected
+                              ? "bg-primary text-white border-primary"
+                              : addedModelValues.includes(model.value)
+                                ? "bg-primary border-primary text-white hover:bg-primary-hover"
+                                : "bg-surface border-border text-text-main hover:border-primary/50 hover:bg-primary/5"
+                          }
+                        `}
+                      >
+                        <span className="flex items-center gap-1">
+                          {addedModelValues.includes(model.value) && !isPlaceholder && (
+                            <span className="material-symbols-outlined leading-none" style={{ fontSize: "10px" }}>check</span>
+                          )}
+                          {isPlaceholder ? (
+                            <>
+                              <span className="material-symbols-outlined text-[11px]">edit</span>
+                              {model.name}
+                            </>
+                          ) : model.isCustom || model.isSynced ? (
+                            <>
+                              {model.name}
+                              <span className="text-[9px] opacity-60 font-normal">{model.isSynced ? "synced" : "custom"}</span>
+                              <CapacityBadges caps={getCaps(model.value)} />
+                              {renderTestBadge(model)}
+                            </>
+                          ) : (
+                            <>
+                              {model.name}
+                              <CapacityBadges caps={getCaps(model.value)} />
+                              {renderTestBadge(model)}
+                            </>
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+
+            {Object.keys(filteredGroups).length === 0 && filteredCombos.length === 0 && (
+              <div className="text-center py-4 text-text-muted">
+                <span className="material-symbols-outlined text-2xl mb-1 block">
+                  search_off
+                </span>
+                <p className="text-xs">No models found</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {enableModelTesting && (
+          <aside className="order-first flex min-h-[360px] flex-col gap-4 border-b border-border-subtle bg-surface-2/35 p-4 lg:order-none lg:min-h-0 lg:border-b-0 lg:border-l">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-primary text-[18px]">science</span>
+                  <h3 className="text-sm font-semibold text-text-main">Model Health</h3>
+                </div>
+                <p className="mt-1 text-xs text-text-muted">{flatModelOptions.length} selectable</p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {!testingAll && hasTestHistory && resumableCount > 0 && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon="play_arrow"
+                    onClick={continueModelTests}
                   >
-                    <span className="flex items-center gap-1">
-                      {addedModelValues.includes(model.value) && !isPlaceholder && (
-                        <span className="material-symbols-outlined leading-none" style={{ fontSize: "10px" }}>check</span>
-                      )}
-                      {isPlaceholder ? (
-                        <>
-                          <span className="material-symbols-outlined text-[11px]">edit</span>
-                          {model.name}
-                        </>
-                      ) : model.isCustom || model.isSynced ? (
-                        <>
-                          {model.name}
-                          <span className="text-[9px] opacity-60 font-normal">{model.isSynced ? "synced" : "custom"}</span>
-                          <CapacityBadges caps={getCaps(model.value)} />
-                        </>
-                      ) : (
-                        <>
-                          {model.name}
-                          <CapacityBadges caps={getCaps(model.value)} />
-                        </>
-                      )}
-                    </span>
-                  </button>
-                );
-              })}
+                    Continue
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  variant={testingAll ? "secondary" : "primary"}
+                  icon={testingAll ? "stop_circle" : "bolt"}
+                  onClick={testingAll ? stopTesting : () => runModelTests({ resetHistory: true })}
+                  disabled={!testingAll && flatModelOptions.length === 0}
+                >
+                  {testingAll ? "Stop" : "Test All"}
+                </Button>
+              </div>
             </div>
-          </div>
-        ))}
 
-        {Object.keys(filteredGroups).length === 0 && filteredCombos.length === 0 && (
-          <div className="text-center py-4 text-text-muted">
-            <span className="material-symbols-outlined text-2xl mb-1 block">
-              search_off
-            </span>
-            <p className="text-xs">No models found</p>
-          </div>
+            <div>
+              <div className="mb-1 flex items-center justify-between text-[10px] text-text-muted">
+                <span>{testProgress.done}/{testProgress.total || flatModelOptions.length}</span>
+                <span>{testStats.ok} working</span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-surface-3">
+                <div
+                  className="h-full rounded-full bg-primary transition-all"
+                  style={{
+                    width: `${testProgress.total ? Math.round((testProgress.done / testProgress.total) * 100) : 0}%`,
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/8 px-2 py-2 text-center">
+                <div className="text-base font-semibold text-emerald-500">{testStats.ok}</div>
+                <div className="text-[10px] text-text-muted">Pass</div>
+              </div>
+              <div className="rounded-lg border border-red-500/20 bg-red-500/8 px-2 py-2 text-center">
+                <div className="text-base font-semibold text-red-500">{testStats.failed}</div>
+                <div className="text-[10px] text-text-muted">Fail</div>
+              </div>
+              <div className="rounded-lg border border-border bg-surface px-2 py-2 text-center">
+                <div className="text-base font-semibold text-text-main">{testStats.untested}</div>
+                <div className="text-[10px] text-text-muted">Idle</div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-text-main">Working Models</span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={handleAddFreePassedModels}
+                  disabled={freePassedModels.length === 0 || freePassedModels.every((model) => addedModelValues.includes(model.value))}
+                  className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-emerald-500 transition-colors hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:text-text-muted"
+                  title={`${freePassedModels.length} free passed model${freePassedModels.length === 1 ? "" : "s"}`}
+                >
+                  <span className="material-symbols-outlined text-[13px]">auto_awesome</span>
+                  Free passed
+                </button>
+                <button
+                  onClick={handleAddWorkingModels}
+                  disabled={workingModels.every((model) => addedModelValues.includes(model.value))}
+                  className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:text-text-muted"
+                >
+                  <span className="material-symbols-outlined text-[13px]">playlist_add</span>
+                  Add passed
+                </button>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1 custom-scrollbar">
+              {workingModels.length === 0 ? (
+                <div className="flex h-full min-h-[160px] flex-col items-center justify-center rounded-xl border border-dashed border-border text-center text-text-muted">
+                  <span className="material-symbols-outlined text-[24px]">rule</span>
+                  <p className="mt-1 text-xs">No passing models yet</p>
+                </div>
+              ) : (
+                workingModels.map((model) => {
+                  const isAdded = addedModelValues.includes(model.value);
+                  const result = testResults[model.value];
+                  return (
+                    <button
+                      key={model.value}
+                      onClick={() => handleSelect(model)}
+                      className={`w-full rounded-lg border px-2.5 py-2 text-left transition-colors ${
+                        isAdded
+                          ? "border-primary bg-primary/10"
+                          : "border-border bg-surface hover:border-primary/40 hover:bg-primary/5"
+                      }`}
+                    >
+                      <div className="flex min-w-0 items-center justify-between gap-2">
+                        <span className="truncate text-xs font-semibold text-text-main">{model.name}</span>
+                        <span className="shrink-0 text-[10px] text-emerald-500">{result?.latencyMs ? `${result.latencyMs}ms` : "ok"}</span>
+                      </div>
+                      <div className="mt-1 flex items-center gap-1 text-[10px] text-text-muted">
+                        <span className="truncate">{model.groupName}</span>
+                        {isAdded && <span className="text-primary">selected</span>}
+                      </div>
+                      {result?.sampleText && (
+                        <div className="mt-1 truncate text-[10px] text-text-muted" title={result.sampleText}>
+                          {result.sampleText}
+                        </div>
+                      )}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </aside>
         )}
       </div>
     </Modal>
@@ -635,4 +1068,5 @@ ModelSelectModal.propTypes = {
   kindFilter: PropTypes.string,
   addedModelValues: PropTypes.arrayOf(PropTypes.string),
   closeOnSelect: PropTypes.bool,
+  enableModelTesting: PropTypes.bool,
 };

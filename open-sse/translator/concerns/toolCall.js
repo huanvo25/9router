@@ -21,7 +21,23 @@ function sanitizeToolId(id) {
   return sanitized.length > 0 ? sanitized : null;
 }
 
-// Ensure all tool_calls have valid id field and arguments is string (some providers require it)
+function safeToolArguments(value) {
+  if (value == null || value === "") return "{}";
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? value : "{}";
+    } catch {
+      return "{}";
+    }
+  }
+  if (typeof value === "object" && !Array.isArray(value)) {
+    try { return JSON.stringify(value); } catch { return "{}"; }
+  }
+  return "{}";
+}
+
+// Ensure all tool_calls have valid id field and arguments is a valid JSON object string.
 export function ensureToolCallIds(body) {
   if (!body.messages || !Array.isArray(body.messages)) return body;
 
@@ -38,9 +54,9 @@ export function ensureToolCallIds(body) {
         if (!tc.type) {
           tc.type = "function";
         }
-        // Ensure arguments is JSON string, not object
-        if (tc.function?.arguments && typeof tc.function.arguments !== "string") {
-          tc.function.arguments = JSON.stringify(tc.function.arguments);
+        // Ensure arguments is a valid JSON object string.
+        if (tc.function) {
+          tc.function.arguments = safeToolArguments(tc.function.arguments);
         }
       }
     }

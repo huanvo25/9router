@@ -17,9 +17,10 @@ export const COLORS = {
 // Buffer tokens to prevent context errors
 const BUFFER_TOKENS = 2000;
 
-// Get HH:MM:SS timestamp
+// Get HH:MM:SS timestamp (Vietnam timezone by default, override via CONSOLE_TIME_ZONE)
+const CONSOLE_TIME_ZONE = process.env.CONSOLE_TIME_ZONE || "Asia/Ho_Chi_Minh";
 function getTimeString() {
-  return new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return new Date().toLocaleTimeString("sv-SE", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: CONSOLE_TIME_ZONE });
 }
 
 /**

@@ -29,7 +29,7 @@ export {
 
 // API keys
 export {
-  getApiKeys, getApiKeyById, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
+  getApiKeys, getApiKeyById, getApiKeyByKey, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
 } from "./repos/apiKeysRepo.js";
 
 // Combos
@@ -42,6 +42,7 @@ export {
 export {
   getModelAliases, setModelAlias, deleteModelAlias,
   getCustomModels, addCustomModel, deleteCustomModel,
+  clearCustomModelsForProvider, clearAliasesForProvider,
   getSyncedAvailableModels, getAllSyncedAvailableModels,
   replaceSyncedAvailableModels, clearSyncedAvailableModels,
   getMitmAlias, setMitmAliasAll,

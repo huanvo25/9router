@@ -9,8 +9,10 @@ const LOG_LEVELS = {
 
 const LEVEL = LOG_LEVELS[process.env.LOG_LEVEL?.toUpperCase?.()] ?? LOG_LEVELS.INFO;
 
+const CONSOLE_TIME_ZONE = process.env.CONSOLE_TIME_ZONE || "Asia/Ho_Chi_Minh";
+
 function formatTime() {
-  return new Date().toLocaleTimeString("en-US", { hour12: false });
+  return new Date().toLocaleTimeString("sv-SE", { hour12: false, timeZone: CONSOLE_TIME_ZONE });
 }
 
 function formatData(data) {

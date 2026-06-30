@@ -37,7 +37,23 @@ export const SEARCH_LIST_TOTAL_DIR_MAX = 20;
 // Smart truncate (port of filter.rs smart_truncate fallback)
 export const SMART_TRUNCATE_HEAD = 120;        // lines kept from top
 export const SMART_TRUNCATE_TAIL = 60;         // lines kept from bottom
-export const SMART_TRUNCATE_MIN_LINES = 250;   // only kick in above this
+export const SMART_TRUNCATE_MIN_LINES = 250;
+
+// Scored truncate (importance-based fallback, replaces smart-truncate as default)
+export const SCORED_HEAD = 40;              // lines kept from top
+export const SCORED_TAIL = 30;              // lines kept from bottom
+export const SCORED_MIN_LINES = 150;       // only kick in above this
+export const SCORED_THRESHOLD = 2;         // minimum score to keep a middle line
+export const SCORED_MAX_KEEP = 200;        // hard cap on total output lines
+
+// Progressive compression (age-based cross-message): recent tool results
+// kept lighter, old tool results compressed harder. age = distance from
+// the latest message in the conversation.
+export const AGE_LIGHT_TURNS = 3;            // last N msgs: skip unless large
+export const AGE_HEAVY_TURNS = 10;           // N+ turns back: aggressive
+export const AGE_LIGHT_MIN_BYTES = 50_000;   // recent: only compress above this
+export const AGE_HEAVY_MIN_BYTES = 2_000;    // old: compress even small results
+export const AGE_HEAVY_RECOMPRESS_BYTES = 20_000; // old+still large -> 2nd pass
 
 // readNumbered (files with "  N|content" lines, e.g. Cursor read_file)
 export const READ_NUMBERED_MIN_HIT_RATIO = 0.7;
@@ -53,6 +69,7 @@ export const FILTERS = {
   TREE: "tree",
   DEDUP_LOG: "dedup-log",
   SMART_TRUNCATE: "smart-truncate",
+  SCORED_TRUNCATE: "scored-truncate",
   READ_NUMBERED: "read-numbered",
   SEARCH_LIST: "search-list",
   BUILD_OUTPUT: "build-output"

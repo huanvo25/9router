@@ -9,6 +9,7 @@ import {
 } from "../services/auth.js";
 import { cacheClaudeHeaders } from "open-sse/utils/claudeHeaderCache.js";
 import { getSettings } from "@/lib/localDb";
+import { getApiKeyByKey } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
@@ -16,6 +17,19 @@ import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { handleComboChat, handleFusionChat } from "open-sse/services/combo.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
+
+const MODEL_REDIRECTS = new Map([
+  ["gpt-5.4-mini", "helper.fallback"],
+]);
+
+function resolveModelRedirect(modelStr, settings) {
+  const settingsRedirects = settings?.modelRedirects;
+  if (settingsRedirects && typeof settingsRedirects === "object") {
+    const override = settingsRedirects[modelStr];
+    if (typeof override === "string" && override.trim()) return override.trim();
+  }
+  return MODEL_REDIRECTS.get(modelStr) || null;
+}
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
@@ -48,7 +62,7 @@ export async function handleChat(request, clientRawRequest = null) {
 
   // Log request endpoint and model
   const url = new URL(request.url);
-  const modelStr = body.model;
+  let modelStr = body.model;
 
   // Count messages (support both messages[] and input[] formats)
   const msgCount = body.messages?.length || body.input?.length || 0;
@@ -85,10 +99,52 @@ export async function handleChat(request, clientRawRequest = null) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   }
 
+  // ── API key model pinning / quick-combo ──────────────────────────────
+  // If the key has allowedModels configured, enforce it:
+  //  - requested model IS allowed → pass through unchanged
+  //  - 1 allowed model → force route to that single model
+  //  - 2+ allowed models → ephemeral quick-combo (fallback over them)
+  if (apiKey) {
+    const keyRecord = await getApiKeyByKey(apiKey);
+    const allowed = keyRecord?.allowedModels;
+    if (Array.isArray(allowed) && allowed.length > 0) {
+      if (!allowed.includes(modelStr)) {
+        if (allowed.length === 1) {
+          const pinned = allowed[0];
+          log.info("KEY-PIN", `Key "${keyRecord.name}" pinning ${modelStr} -> ${pinned}`);
+          modelStr = pinned;
+          body = { ...body, model: pinned };
+        } else {
+          log.info("KEY-COMBO", `Key "${keyRecord.name}" quick-combo [${allowed.join(", ")}] (requested ${modelStr})`);
+          const comboStrategy = settings.comboStrategy || "fallback";
+          const comboStickyLimit = settings.comboStickyRoundRobinLimit;
+          return handleComboChat({
+            body: { ...body, model: modelStr },
+            models: allowed,
+            handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+            log,
+            comboName: `key:${keyRecord.name}`,
+            comboStrategy,
+            comboStickyLimit,
+          });
+        }
+      }
+    }
+  }
+
   // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots
   const userAgent = request?.headers?.get("user-agent") || "";
   const bypassResponse = handleBypassRequest(body, modelStr, userAgent, !!settings.ccFilterNaming);
   if (bypassResponse) return bypassResponse.response || bypassResponse;
+
+  // Redirect client-side helper/mini models to the configured combo fallback.
+  // This keeps Codex/CLI helper requests off providers that do not exist in this deployment.
+  const redirectedModel = resolveModelRedirect(modelStr, settings);
+  if (redirectedModel && redirectedModel !== modelStr) {
+    log.info("CHAT", `Redirecting model ${modelStr} -> ${redirectedModel}`);
+    modelStr = redirectedModel;
+    body = { ...body, model: redirectedModel };
+  }
 
   // Check if model is a combo (has multiple models with fallback)
   const comboModels = await getComboModels(modelStr);

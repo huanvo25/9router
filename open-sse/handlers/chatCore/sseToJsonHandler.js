@@ -73,6 +73,10 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
     const choice = chunk?.choices?.[0];
     const delta = choice?.delta || {};
     if (typeof delta.content === "string" && delta.content.length > 0) contentParts.push(delta.content);
+    else if (Array.isArray(delta.content)) {
+      const flat = delta.content.map(c => (typeof c === "string" ? c : c?.text || c?.output_text || "")).filter(Boolean).join("");
+      if (flat) contentParts.push(flat);
+    }
     if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) reasoningParts.push(delta.reasoning_content);
     if (choice?.finish_reason) finishReason = choice.finish_reason;
     if (chunk?.usage && typeof chunk.usage === "object") usage = chunk.usage;

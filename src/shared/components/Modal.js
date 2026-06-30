@@ -15,6 +15,7 @@ export default function Modal({
   closeOnOverlay = true,
   showTrafficLights = true,
   className,
+  bodyClassName,
 }) {
   const sizes = {
     sm: "max-w-sm",
@@ -22,6 +23,7 @@ export default function Modal({
     lg: "max-w-lg",
     xl: "max-w-xl",
     full: "max-w-4xl",
+    wide: "max-w-[calc(100vw-1rem)] sm:max-w-[calc(100vw-2rem)] 2xl:max-w-[1680px]",
   };
 
   useEffect(() => {
@@ -44,7 +46,7 @@ export default function Modal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4">
       {/* Overlay */}
       <div
         className="absolute inset-0 bg-black/50 backdrop-blur-[2px] fade-in"
@@ -99,7 +101,7 @@ export default function Modal({
         )}
 
         {/* Body */}
-        <div className="p-6 max-h-[calc(85vh-100px)] overflow-y-auto custom-scrollbar">{children}</div>
+        <div className={cn("p-6 max-h-[calc(85vh-100px)] overflow-y-auto custom-scrollbar", bodyClassName)}>{children}</div>
 
         {/* Footer */}
         {footer && (

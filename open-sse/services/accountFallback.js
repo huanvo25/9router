@@ -1,4 +1,27 @@
-import { ERROR_RULES, BACKOFF_CONFIG, TRANSIENT_COOLDOWN_MS } from "../config/errorConfig.js";
+import { ERROR_RULES, BACKOFF_CONFIG, TRANSIENT_COOLDOWN_MS, BUSY_CONNECTION_COOLDOWN_MS, MODEL_FAILURE_BACKOFF_BASE_MS, MODEL_FAILURE_BACKOFF_MAX_MS, MODEL_FAILURE_IDLE_RESET_MS } from "../config/errorConfig.js";
+
+
+const BUSY_CONCURRENCY_TEXT = [
+  "hệ thống đang bận",
+  "system busy",
+  "try again later",
+  "please wait",
+  "pool limit",
+  "maximum concurrent requests",
+  "too many in-flight",
+  "in-flight requests",
+];
+
+const PREFLIGHT_TIMEOUT_TEXT = [
+  "upstream first byte timeout",
+  "upstream first productive timeout",
+  "upstream headers timeout",
+];
+
+function normalizeErrorText(errorText) {
+  if (!errorText) return "";
+  return (typeof errorText === "string" ? errorText : JSON.stringify(errorText)).toLowerCase();
+}
 
 /**
  * Calculate exponential backoff cooldown for rate limits (429)
@@ -18,12 +41,10 @@ export function getQuotaCooldown(backoffLevel = 0) {
  * @param {number} status - HTTP status code
  * @param {string} errorText - Error message text
  * @param {number} backoffLevel - Current backoff level for exponential backoff
- * @returns {{ shouldFallback: boolean, cooldownMs: number, newBackoffLevel?: number }}
+ * @returns {{ shouldFallback: boolean, cooldownMs: number, newBackoffLevel?: number, selfHeal?: boolean }}
  */
 export function checkFallbackError(status, errorText, backoffLevel = 0) {
-  const lowerError = errorText
-    ? (typeof errorText === "string" ? errorText : JSON.stringify(errorText)).toLowerCase()
-    : "";
+  const lowerError = normalizeErrorText(errorText);
 
   for (const rule of ERROR_RULES) {
     // Text-based rule: match substring in error message
@@ -32,7 +53,7 @@ export function checkFallbackError(status, errorText, backoffLevel = 0) {
         const newLevel = Math.min(backoffLevel + 1, BACKOFF_CONFIG.maxLevel);
         return { shouldFallback: true, cooldownMs: getQuotaCooldown(newLevel), newBackoffLevel: newLevel };
       }
-      return { shouldFallback: true, cooldownMs: rule.cooldownMs };
+      return { shouldFallback: true, cooldownMs: rule.cooldownMs, selfHeal: rule.selfHeal === true };
     }
 
     // Status-based rule: match HTTP status code
@@ -41,12 +62,58 @@ export function checkFallbackError(status, errorText, backoffLevel = 0) {
         const newLevel = Math.min(backoffLevel + 1, BACKOFF_CONFIG.maxLevel);
         return { shouldFallback: true, cooldownMs: getQuotaCooldown(newLevel), newBackoffLevel: newLevel };
       }
-      return { shouldFallback: true, cooldownMs: rule.cooldownMs };
+      return { shouldFallback: true, cooldownMs: rule.cooldownMs, selfHeal: rule.selfHeal === true };
     }
   }
 
   // Default: transient cooldown for any unmatched error
   return { shouldFallback: true, cooldownMs: TRANSIENT_COOLDOWN_MS };
+}
+
+
+/** True for the rate-limit error class: HTTP 429 or a rate-limit text rule
+ *  (the `backoff: true` entries in ERROR_RULES). These get a fixed base cooldown
+ *  and are neutral to the per-model failure counter (no bump, no reset). */
+export function isProviderSelfHealError(status, errorText) {
+  const lowerError = normalizeErrorText(errorText);
+  for (const rule of ERROR_RULES) {
+    if (!rule.selfHeal) continue;
+    if (rule.text && lowerError && lowerError.includes(rule.text)) return true;
+    if (rule.status && rule.status === status) return true;
+  }
+  return false;
+}
+
+export function isRateLimitError(status, errorText) {
+  const lowerError = normalizeErrorText(errorText);
+  for (const rule of ERROR_RULES) {
+    if (!rule.backoff) continue;
+    if (rule.text && lowerError && lowerError.includes(rule.text)) return true;
+    if (rule.status && rule.status === status) return true;
+  }
+  return false;
+}
+
+export function isBusyConcurrencyError(errorText) {
+  const lowerError = normalizeErrorText(errorText);
+  return !!lowerError && BUSY_CONCURRENCY_TEXT.some(text => lowerError.includes(text));
+}
+
+export function isPreflightTimeoutError(status, errorText) {
+  const lowerError = normalizeErrorText(errorText);
+  return Number(status) === 502 && PREFLIGHT_TIMEOUT_TEXT.some(text => lowerError.includes(text));
+}
+
+export function shouldLockConnectionForError({ status, errorText, recentFailureCount = 0 } = {}) {
+  if (isBusyConcurrencyError(errorText)) return true;
+  if (isPreflightTimeoutError(status, errorText) && recentFailureCount >= 2) return true;
+  return false;
+}
+
+export function resolveConnectionCooldownMs({ status, errorText, cooldownMs = 0, recentFailureCount = 0 } = {}) {
+  if (isBusyConcurrencyError(errorText)) return BUSY_CONNECTION_COOLDOWN_MS;
+  if (isPreflightTimeoutError(status, errorText) && recentFailureCount >= 2) return Math.max(cooldownMs || 0, BUSY_CONNECTION_COOLDOWN_MS);
+  return cooldownMs || 0;
 }
 
 /**
@@ -160,6 +227,136 @@ export function buildClearModelLocksUpdate(connection) {
   return cleared;
 }
 
+
+/** Prefix for per-model consecutive-failure counters on a connection record.
+ *  Distinct from MODEL_LOCK_PREFIX so counters survive lock expiry and are
+ *  only cleared on a successful call to that model (not on auto-heal). */
+export const MODEL_FAILURE_PREFIX = "modelFailure_";
+export const MODEL_FAILURE_ALL = `${MODEL_FAILURE_PREFIX}__all`;
+
+/** Build the flat field key for a per-model failure counter. */
+export function getModelFailureKey(model) {
+  return model ? `${MODEL_FAILURE_PREFIX}${model}` : MODEL_FAILURE_ALL;
+}
+
+/** Prefix for per-model last-failure timestamps (non-rate-limit failures only).
+ *  Drives time-based counter decay: after MODEL_FAILURE_IDLE_RESET_MS with no
+ *  new non-rate-limit failure, the counter resets to a fresh start. */
+export const MODEL_FAILURE_AT_PREFIX = "modelFailureAt_";
+export const MODEL_FAILURE_AT_ALL = `${MODEL_FAILURE_AT_PREFIX}__all`;
+
+/** Build the flat field key for a per-model last-failure timestamp. */
+export function getModelFailureAtKey(model) {
+  return model ? `${MODEL_FAILURE_AT_PREFIX}${model}` : MODEL_FAILURE_AT_ALL;
+}
+
+/** Read the stored consecutive-failure count for a model (or connection-level __all). */
+export function getModelFailureCount(connection, model) {
+  if (!connection) return 0;
+  const count = Number(connection[getModelFailureKey(model)]);
+  return Number.isFinite(count) && count > 0 ? count : 0;
+}
+
+/** Cooldown for the Nth consecutive failure: base * 2^(n-1), capped at max. */
+export function getModelBackoffCooldownMs(failureCount) {
+  const n = Math.max(1, failureCount);
+  const cooldown = MODEL_FAILURE_BACKOFF_BASE_MS * Math.pow(2, n - 1);
+  return Math.min(cooldown, MODEL_FAILURE_MAX_MS_OR_BASE(cooldown));
+}
+
+function MODEL_FAILURE_MAX_MS_OR_BASE(cooldown) {
+  return Math.min(cooldown, MODEL_FAILURE_BACKOFF_MAX_MS);
+}
+
+/** Bump the per-model consecutive-failure counter and return the resulting
+ *  cooldown to apply as a model lock. Counters persist across lock expiry so
+ *  that repeated failures keep escalating until a successful call resets them.
+ *
+ *  Rate-limit class errors (429 + rate-limit text rules) are neutral to the
+ *  counter: they block for a fixed MODEL_FAILURE_BACKOFF_BASE_MS without
+ *  bumping or resetting the counter, so consecutive 429s never double.
+ *  Non-rate-limit failures escalate (base * 2^(n-1)) and, after
+ *  MODEL_FAILURE_IDLE_RESET_MS with no new non-rate-limit failure, the counter
+ *  resets to a fresh start. */
+export function buildModelFailureBackoffUpdate(connection, model, { isRateLimit = false, selfHeal = false } = {}) {
+  const prevCount = getModelFailureCount(connection, model);
+  const atKey = getModelFailureAtKey(model);
+  const now = Date.now();
+  if (isRateLimit || selfHeal) {
+    return { count: prevCount, cooldownMs: selfHeal ? 0 : MODEL_FAILURE_BACKOFF_BASE_MS, update: {} };
+  }
+  const lastAt = Number(connection?.[atKey]) || 0;
+  const idleLongEnough = lastAt > 0 && (now - lastAt) > MODEL_FAILURE_IDLE_RESET_MS;
+  const count = idleLongEnough ? 1 : prevCount + 1;
+  const cooldownMs = getModelBackoffCooldownMs(count);
+  return { count, cooldownMs, update: { [getModelFailureKey(model)]: count, [atKey]: now } };
+}
+
+/** Build update object that clears the per-model failure counter on success.
+ *  A specific model success clears only that model's counter; a model-less
+ *  success (fetch/search) clears the connection-level __all counter only. */
+export function buildClearModelFailureUpdate(connection, model) {
+  if (!connection) return {};
+  const update = {};
+  if (model) {
+    const key = getModelFailureKey(model);
+    if (connection[key] != null) update[key] = 0;
+  } else if (connection[MODEL_FAILURE_ALL] != null) {
+    update[MODEL_FAILURE_ALL] = 0;
+  }
+  return update;
+}
+
+/**
+ * Detect and build a cleanup update for a connection whose error state is stale:
+ * testStatus is "unavailable"/"error" (or lastError set) but all modelLock_* keys
+ * have expired. Returns { needsUpdate, update } where update is the DB patch.
+ * Does NOT persist; caller decides whether to write. When some locks are still
+ * active, only expired lock keys are cleaned (partial=true) without resetting
+ * error display state.
+ */
+export function normalizeStaleConnectionState(connection) {
+  if (!connection) return { needsUpdate: false, update: {} };
+  const hasErrorState =
+    connection.testStatus === "unavailable" ||
+    connection.testStatus === "error" ||
+    !!connection.lastError;
+  if (!hasErrorState) return { needsUpdate: false, update: {} };
+
+  const now = Date.now();
+  const lockEntries = Object.entries(connection).filter(
+    ([k]) => k.startsWith(MODEL_LOCK_PREFIX) || k === MODEL_LOCK_ALL,
+  );
+  const expiredLockKeys = [];
+  let hasActiveLock = false;
+
+  for (const [key, val] of lockEntries) {
+    if (!val) continue;
+    if (new Date(val).getTime() > now) {
+      hasActiveLock = true;
+    } else {
+      expiredLockKeys.push(key);
+    }
+  }
+
+  if (hasActiveLock) {
+    if (expiredLockKeys.length === 0) return { needsUpdate: false, update: {} };
+    const update = {};
+    for (const k of expiredLockKeys) update[k] = null;
+    return { needsUpdate: true, update, partial: true };
+  }
+
+  const update = {};
+  for (const k of expiredLockKeys) update[k] = null;
+  if (connection.testStatus === "unavailable" || connection.testStatus === "error") {
+    update.testStatus = "active";
+  }
+  if (connection.lastError) update.lastError = null;
+  if (connection.lastErrorAt) update.lastErrorAt = null;
+  if (connection.errorCode) update.errorCode = null;
+  if (connection.backoffLevel) update.backoffLevel = 0;
+  return { needsUpdate: Object.keys(update).length > 0, update };
+}
 /**
  * Filter available accounts (not in cooldown)
  */

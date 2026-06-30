@@ -28,6 +28,8 @@ export {
   getCustomModels,
   addCustomModel,
   deleteCustomModel,
+  clearCustomModelsForProvider,
+  clearAliasesForProvider,
   getSyncedAvailableModels,
   getAllSyncedAvailableModels,
   replaceSyncedAvailableModels,
@@ -38,5 +40,6 @@ export {
   createApiKey,
   deleteApiKey,
   validateApiKey,
+  getApiKeyByKey,
   isCloudEnabled,
 } from "@/lib/localDb";

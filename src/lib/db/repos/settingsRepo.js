@@ -42,6 +42,9 @@ const DEFAULT_SETTINGS = {
   cavemanLevel: "full",
   ponytailEnabled: false,
   ponytailLevel: "full",
+  modelRedirects: {
+    "gpt-5.4-mini": "helper.fallback",
+  },
 };
 
 async function readRaw() {

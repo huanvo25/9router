@@ -6,6 +6,7 @@ import {
   deleteProviderConnection,
 } from "@/models";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
+import { normalizeStaleConnectionState } from "open-sse/services/accountFallback.js";
 
 function normalizeProxyConfig(body = {}) {
   const hasAnyProxyField =
@@ -70,8 +71,15 @@ export async function GET(request, { params }) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
     }
 
+    // Lazy auto-heal: clear stale unavailable state when all model locks expired.
+    let effective = connection;
+    const stale = normalizeStaleConnectionState(connection);
+    if (stale.needsUpdate) {
+      effective = await updateProviderConnection(id, stale.update) || connection;
+    }
+
     // Hide sensitive fields
-    const result = { ...connection };
+    const result = { ...effective };
     delete result.apiKey;
     delete result.accessToken;
     delete result.refreshToken;
@@ -129,6 +137,9 @@ export async function PUT(request, { params }) {
       updateData.defaultModel = defaultModel;
     }
     if (isActive !== undefined) updateData.isActive = isActive;
+    if (isActive === true) {
+      Object.assign(updateData, normalizeStaleConnectionState(existing).update);
+    }
     if (apiKey && existing.authType === "apikey") updateData.apiKey = apiKey;
     if (testStatus !== undefined) updateData.testStatus = testStatus;
     if (lastError !== undefined) updateData.lastError = lastError;

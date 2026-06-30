@@ -96,6 +96,22 @@ export async function PATCH(request) {
       resetComboRotation();
     }
 
+    // Validate modelRedirects is a plain object of string -> string
+    if (Object.prototype.hasOwnProperty.call(body, "modelRedirects")) {
+      const redirects = body.modelRedirects;
+      if (redirects !== null && typeof redirects === "object" && !Array.isArray(redirects)) {
+        const cleaned = {};
+        for (const [key, val] of Object.entries(redirects)) {
+          if (typeof key === "string" && typeof val === "string" && key.trim() && val.trim()) {
+            cleaned[key.trim()] = val.trim();
+          }
+        }
+        body.modelRedirects = cleaned;
+      } else {
+        delete body.modelRedirects;
+      }
+    }
+
     const { password, oidcClientSecret, ...safeSettings } = settings;
     safeSettings.oidcConfigured = !!(safeSettings.oidcIssuerUrl && safeSettings.oidcClientId && oidcClientSecret);
     return NextResponse.json(safeSettings, { headers: SETTINGS_RESPONSE_HEADERS });

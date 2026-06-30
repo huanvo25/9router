@@ -5,6 +5,25 @@ import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import * as log from "../utils/logger.js";
 
+const CONSOLE_TIME_ZONE = process.env.CONSOLE_TIME_ZONE || "Asia/Ho_Chi_Minh";
+const consoleTimeFormatter = new Intl.DateTimeFormat("sv-SE", {
+  timeZone: CONSOLE_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+
+function formatConsoleTimeTz(value) {
+  if (!value) return value;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return `${consoleTimeFormatter.format(date)} ${CONSOLE_TIME_ZONE}`;
+}
+
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
 
@@ -73,7 +92,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       const locked = isModelLockActive(c, model);
       if (excluded || locked) {
         const lockUntil = getEarliestModelLockUntil(c);
-        log.debug("AUTH", `  → ${c.id?.slice(0, 8)} | ${excluded ? "excluded" : ""} ${locked ? `modelLocked(${model}) until ${lockUntil}` : ""}`);
+        log.debug("AUTH", `  → ${c.id?.slice(0, 8)} | ${excluded ? "excluded" : ""} ${locked ? `modelLocked(${model}) until ${formatConsoleTimeTz(lockUntil)}` : ""}`);
       }
     });
 

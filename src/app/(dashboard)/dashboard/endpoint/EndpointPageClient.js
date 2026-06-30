@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import PropTypes from "prop-types";
-import { Card, Button, Input, Modal, CardSkeleton, Toggle, ConfirmModal } from "@/shared/components";
+import { Card, Button, Input, Modal, CardSkeleton, Toggle, ConfirmModal, ModelListEditor } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import {
   TUNNEL_BENEFITS,
@@ -24,6 +24,15 @@ export default function APIPageClient({ machineId }) {
   const [newKeyName, setNewKeyName] = useState("");
   const [createdKey, setCreatedKey] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
+
+  // API key model pinning state
+  const [activeProviders, setActiveProviders] = useState([]);
+  const [modelAliases, setModelAliases] = useState({});
+  const [newKeyAllowedModels, setNewKeyAllowedModels] = useState([]);
+  const [editingKey, setEditingKey] = useState(null);
+  const [editKeyName, setEditKeyName] = useState("");
+  const [editKeyAllowedModels, setEditKeyAllowedModels] = useState([]);
+  const [editSaving, setEditSaving] = useState(false);
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [requireLogin, setRequireLogin] = useState(true);
@@ -254,13 +263,25 @@ export default function APIPageClient({ machineId }) {
   };
 
   const fetchData = async () => {
-    try {
-      const keysRes = await fetch("/api/keys");
+   try {
+      const [keysRes, providersRes, aliasesRes] = await Promise.all([
+        fetch("/api/keys"),
+        fetch("/api/providers"),
+        fetch("/api/models/alias"),
+      ]);
       const keysData = await keysRes.json();
       if (keysRes.ok) {
         setKeys(keysData.keys || []);
       }
-    } catch (error) {
+      if (providersRes.ok) {
+        const providersData = await providersRes.json();
+        setActiveProviders(providersData.connections || []);
+      }
+      if (aliasesRes.ok) {
+        const aliasesData = await aliasesRes.json();
+        setModelAliases(aliasesData.aliases || {});
+      }
+   } catch (error) {
       console.log("Error fetching data:", error);
     } finally {
       setLoading(false);
@@ -608,26 +629,27 @@ export default function APIPageClient({ machineId }) {
   };
 
   const handleCreateKey = async () => {
-    if (!newKeyName.trim()) return;
+   if (!newKeyName.trim()) return;
 
-    try {
-      const res = await fetch("/api/keys", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newKeyName }),
-      });
-      const data = await res.json();
+   try {
+     const res = await fetch("/api/keys", {
+       method: "POST",
+       headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newKeyName, allowedModels: newKeyAllowedModels }),
+     });
+     const data = await res.json();
 
-      if (res.ok) {
-        setCreatedKey(data.key);
-        await fetchData();
-        setNewKeyName("");
-        setShowAddModal(false);
-      }
-    } catch (error) {
-      console.log("Error creating key:", error);
-    }
-  };
+     if (res.ok) {
+       setCreatedKey(data.key);
+       await fetchData();
+       setNewKeyName("");
+        setNewKeyAllowedModels([]);
+       setShowAddModal(false);
+     }
+   } catch (error) {
+     console.log("Error creating key:", error);
+   }
+ };
 
   const handleDeleteKey = async (id) => {
     setConfirmState({
@@ -653,17 +675,46 @@ export default function APIPageClient({ machineId }) {
   };
 
   const handleToggleKey = async (id, isActive) => {
+   try {
+     const res = await fetch(`/api/keys/${id}`, {
+       method: "PUT",
+       headers: { "Content-Type": "application/json" },
+       body: JSON.stringify({ isActive }),
+     });
+     if (res.ok) {
+       setKeys(prev => prev.map(k => k.id === id ? { ...k, isActive } : k));
+     }
+   } catch (error) {
+     console.log("Error toggling key:", error);
+   }
+ };
+
+  const handleOpenEditKey = (key) => {
+    setEditingKey(key);
+    setEditKeyName(key.name || "");
+    setEditKeyAllowedModels(Array.isArray(key.allowedModels) ? [...key.allowedModels] : []);
+  };
+
+  const handleEditKey = async () => {
+    if (!editingKey || !editKeyName.trim()) return;
+    setEditSaving(true);
     try {
-      const res = await fetch(`/api/keys/${id}`, {
+      const res = await fetch(`/api/keys/${editingKey.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isActive }),
+        body: JSON.stringify({ name: editKeyName, allowedModels: editKeyAllowedModels }),
       });
       if (res.ok) {
-        setKeys(prev => prev.map(k => k.id === id ? { ...k, isActive } : k));
+        const data = await res.json();
+        if (data.key) {
+          setKeys(prev => prev.map(k => k.id === editingKey.id ? { ...k, ...data.key } : k));
+        }
+        setEditingKey(null);
       }
     } catch (error) {
-      console.log("Error toggling key:", error);
+      console.log("Error editing key:", error);
+    } finally {
+      setEditSaving(false);
     }
   };
 
@@ -1022,14 +1073,34 @@ export default function APIPageClient({ machineId }) {
                     </button>
                   </div>
                   <p className="text-xs text-text-muted mt-1">
-                    Created {new Date(key.createdAt).toLocaleDateString()}
-                  </p>
-                  {key.isActive === false && (
-                    <p className="text-xs text-orange-500 mt-1">Paused</p>
+                   Created {new Date(key.createdAt).toLocaleDateString()}
+                 </p>
+                  {key.allowedModels && key.allowedModels.length > 0 && (
+                    <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1">
+                      <span className="text-[10px] text-text-muted font-medium shrink-0">Models:</span>
+                      {key.allowedModels.slice(0, 3).map((model) => (
+                        <code key={model} className="inline-flex items-center rounded bg-black/5 px-1.5 py-0.5 font-mono text-[10px] text-text-muted dark:bg-white/5">
+                          {model}
+                        </code>
+                      ))}
+                      {key.allowedModels.length > 3 && (
+                        <span className="text-[10px] text-text-muted">+{key.allowedModels.length - 3} more</span>
+                      )}
+                    </div>
                   )}
-                </div>
-                <div className="flex items-center gap-2">
-                  <Toggle
+                 {key.isActive === false && (
+                   <p className="text-xs text-orange-500 mt-1">Paused</p>
+                 )}
+               </div>
+               <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleOpenEditKey(key)}
+                    className="p-2 hover:bg-primary/10 rounded text-text-muted hover:text-primary opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all"
+                    title="Edit key"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">edit</span>
+                  </button>
+                 <Toggle
                     size="sm"
                     checked={key.isActive ?? true}
                     onChange={(checked) => {
@@ -1062,38 +1133,56 @@ export default function APIPageClient({ machineId }) {
       </Card>
 
       {/* Add Key Modal */}
-      <Modal
-        isOpen={showAddModal}
-        title="Create API Key"
-        onClose={() => {
-          setShowAddModal(false);
-          setNewKeyName("");
-        }}
-      >
-        <div className="flex flex-col gap-4">
-          <Input
-            label="Key Name"
-            value={newKeyName}
-            onChange={(e) => setNewKeyName(e.target.value)}
-            placeholder="Production Key"
-          />
-          <div className="flex gap-2">
-            <Button onClick={handleCreateKey} fullWidth disabled={!newKeyName.trim()}>
-              Create
-            </Button>
-            <Button
-              onClick={() => {
-                setShowAddModal(false);
-                setNewKeyName("");
-              }}
-              variant="ghost"
-              fullWidth
-            >
-              Cancel
-            </Button>
+     <Modal
+       isOpen={showAddModal}
+       title="Create API Key"
+       onClose={() => {
+         setShowAddModal(false);
+         setNewKeyName("");
+          setNewKeyAllowedModels([]);
+       }}
+     >
+       <div className="flex flex-col gap-4">
+         <Input
+           label="Key Name"
+           value={newKeyName}
+           onChange={(e) => setNewKeyName(e.target.value)}
+           placeholder="Production Key"
+         />
+          <div>
+            <label className="block text-xs font-medium text-text-main mb-1.5">
+              Models (optional)
+              <span className="text-text-muted font-normal ml-1">— pin key to specific model(s). 2+ = quick-combo.</span>
+            </label>
+            <ModelListEditor
+              models={newKeyAllowedModels}
+              onChange={setNewKeyAllowedModels}
+              activeProviders={activeProviders}
+              modelAliases={modelAliases}
+              title="Select Model(s) for Key"
+              addButtonLabel="Add Model"
+              emptyHint="No models pinned — key has no restriction"
+              enableModelTesting
+            />
           </div>
-        </div>
-      </Modal>
+         <div className="flex gap-2">
+           <Button onClick={handleCreateKey} fullWidth disabled={!newKeyName.trim()}>
+             Create
+           </Button>
+           <Button
+             onClick={() => {
+               setShowAddModal(false);
+               setNewKeyName("");
+                setNewKeyAllowedModels([]);
+             }}
+             variant="ghost"
+             fullWidth
+           >
+             Cancel
+           </Button>
+         </div>
+       </div>
+     </Modal>
 
       {/* Created Key Modal */}
       <Modal
@@ -1125,13 +1214,57 @@ export default function APIPageClient({ machineId }) {
             </Button>
           </div>
           <Button onClick={() => setCreatedKey(null)} fullWidth>
-            Done
-          </Button>
+           Done
+         </Button>
+       </div>
+     </Modal>
+
+      {/* Edit Key Modal */}
+      <Modal
+        isOpen={!!editingKey}
+        title="Edit API Key"
+        onClose={() => setEditingKey(null)}
+      >
+        <div className="flex flex-col gap-4">
+          <Input
+            label="Key Name"
+            value={editKeyName}
+            onChange={(e) => setEditKeyName(e.target.value)}
+            placeholder="Production Key"
+          />
+          <div>
+            <label className="block text-xs font-medium text-text-main mb-1.5">
+              Models (optional)
+              <span className="text-text-muted font-normal ml-1">— pin key to specific model(s). 2+ = quick-combo.</span>
+            </label>
+            <ModelListEditor
+              models={editKeyAllowedModels}
+              onChange={setEditKeyAllowedModels}
+              activeProviders={activeProviders}
+              modelAliases={modelAliases}
+              title="Select Model(s) for Key"
+              addButtonLabel="Add Model"
+              emptyHint="No models pinned — key has no restriction"
+              enableModelTesting
+            />
+          </div>
+          <div className="flex gap-2">
+            <Button onClick={handleEditKey} fullWidth disabled={!editKeyName.trim() || editSaving}>
+              {editSaving ? "Saving..." : "Save"}
+            </Button>
+            <Button
+              onClick={() => setEditingKey(null)}
+              variant="ghost"
+              fullWidth
+            >
+              Cancel
+            </Button>
+          </div>
         </div>
       </Modal>
 
-      {/* Enable Tunnel Modal */}
-      <Modal
+     {/* Enable Tunnel Modal */}
+     <Modal
         isOpen={showEnableTunnelModal}
         title="Enable Tunnel"
         onClose={() => setShowEnableTunnelModal(false)}

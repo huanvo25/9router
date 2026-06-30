@@ -1,7 +1,7 @@
 // Port of auto_detect_filter (rtk/src/cmds/system/pipe_cmd.rs:132-188) + JS extras
 // Order: git-diff → git-status → build-output → grep → find → tree → ls → search-list
-//        → read-numbered → dedup-log → smart-truncate → null
-import { DETECT_WINDOW, READ_NUMBERED_MIN_HIT_RATIO, SMART_TRUNCATE_MIN_LINES } from "./constants.js";
+//        → read-numbered → dedup-log → scored-truncate → null
+import { DETECT_WINDOW, READ_NUMBERED_MIN_HIT_RATIO, SMART_TRUNCATE_MIN_LINES, SCORED_MIN_LINES } from "./constants.js";
 import { gitDiff } from "./filters/gitDiff.js";
 import { gitStatus } from "./filters/gitStatus.js";
 import { buildOutput } from "./filters/buildOutput.js";
@@ -10,7 +10,7 @@ import { find } from "./filters/find.js";
 import { dedupLog } from "./filters/dedupLog.js";
 import { ls } from "./filters/ls.js";
 import { tree } from "./filters/tree.js";
-import { smartTruncate } from "./filters/smartTruncate.js";
+import { scoredTruncate } from "./filters/scoredTruncate.js";
 import { readNumbered, READ_NUMBERED_LINE_RE } from "./filters/readNumbered.js";
 import { searchList, SEARCH_LIST_HEADER_RE } from "./filters/searchList.js";
 
@@ -62,8 +62,8 @@ export function autoDetectFilter(text) {
   // Fallback: dedupLog for generic multi-line noise with duplicates
   if (nonEmpty.length >= 5) return dedupLog;
 
-  // Last resort: big blob with no structure — smart truncate
-  if (text.split("\n").length >= SMART_TRUNCATE_MIN_LINES) return smartTruncate;
+  // Last resort: big blob with no structure — importance-scored truncate
+  if (text.split("\n").length >= SCORED_MIN_LINES) return scoredTruncate;
 
   return null;
 }

@@ -46,6 +46,9 @@ export default function ProfilePage() {
   const [oidcLoading, setOidcLoading] = useState(false);
   const [oidcTestLoading, setOidcTestLoading] = useState(false);
   const [oidcTestStatus, setOidcTestStatus] = useState({ type: "", message: "" });
+  const [redirects, setRedirects] = useState([]);
+  const [redirectStatus, setRedirectStatus] = useState({ type: "", message: "" });
+  const [redirectLoading, setRedirectLoading] = useState(false);
   const [oidcRedirectUri, setOidcRedirectUri] = useState("/api/auth/oidc/callback");
   const [oidcExpanded, setOidcExpanded] = useState(false);
   const importFileRef = useRef(null);
@@ -81,6 +84,8 @@ export default function ProfilePage() {
           outboundProxyUrl: data?.outboundProxyUrl || "",
           outboundNoProxy: data?.outboundNoProxy || "",
         });
+        const r = data?.modelRedirects || {};
+        setRedirects(Object.entries(r).map(([model, target]) => ({ model, target })));
         setLoading(false);
       })
       .catch((err) => {
@@ -442,6 +447,48 @@ export default function ProfilePage() {
       setOidcTestStatus({ type: "error", message: "An error occurred" });
     } finally {
       setOidcTestLoading(false);
+    }
+  };
+
+  const updateRedirectRow = (index, field, value) => {
+    setRedirects((prev) => prev.map((r, i) => (i === index ? { ...r, [field]: value } : r)));
+  };
+
+  const addRedirectRow = () => {
+    setRedirects((prev) => [...prev, { model: "", target: "" }]);
+  };
+
+  const removeRedirectRow = (index) => {
+    setRedirects((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const saveRedirects = async () => {
+    setRedirectLoading(true);
+    setRedirectStatus({ type: "", message: "" });
+    try {
+      const obj = {};
+      for (const r of redirects) {
+        const model = (r.model || "").trim();
+        const target = (r.target || "").trim();
+        if (model && target) obj[model] = target;
+      }
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelRedirects: obj }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        const r = data?.modelRedirects || {};
+        setRedirects(Object.entries(r).map(([model, target]) => ({ model, target })));
+        setRedirectStatus({ type: "success", message: "Model redirects saved" });
+      } else {
+        setRedirectStatus({ type: "error", message: data.error || "Failed to save redirects" });
+      }
+    } catch {
+      setRedirectStatus({ type: "error", message: "An error occurred" });
+    } finally {
+      setRedirectLoading(false);
     }
   };
 
@@ -1073,6 +1120,64 @@ export default function ProfilePage() {
             {proxyStatus.message && (
               <p className={`text-xs sm:text-sm ${proxyStatus.type === "error" ? "text-red-500" : "text-green-500"} pt-2 border-t border-border/50`}>
                 {proxyStatus.message}
+              </p>
+            )}
+          </div>
+        </Card>
+
+        {/* Model Redirect */}
+        <Card>
+          <div className="flex items-center gap-3 mb-4">
+            <div className="p-2 rounded-lg bg-cyan-500/10 text-cyan-500 shrink-0">
+              <span className="material-symbols-outlined text-[20px]">alt_route</span>
+            </div>
+            <div className="flex-1 min-w-0">
+              <h3 className="text-base sm:text-lg font-semibold">Model Redirect</h3>
+              <p className="text-xs text-text-muted">Route auxiliary/helper models to a combo or model with available credentials</p>
+            </div>
+          </div>
+          <div className="flex flex-col gap-3">
+            {redirects.length === 0 && (
+              <p className="text-xs sm:text-sm text-text-muted italic">No redirects configured. Auxiliary models without credentials will fail.</p>
+            )}
+            {redirects.map((row, index) => (
+              <div key={index} className="flex items-center gap-2">
+                <Input
+                  placeholder="model name (e.g. gpt-5.4-mini)"
+                  value={row.model}
+                  onChange={(e) => updateRedirectRow(index, "model", e.target.value)}
+                  disabled={loading || redirectLoading}
+                  className="flex-1"
+                />
+                <span className="material-symbols-outlined text-text-muted shrink-0">arrow_forward</span>
+                <Input
+                  placeholder="combo or model (e.g. helper.fallback)"
+                  value={row.target}
+                  onChange={(e) => updateRedirectRow(index, "target", e.target.value)}
+                  disabled={loading || redirectLoading}
+                  className="flex-1"
+                />
+                <button
+                  type="button"
+                  onClick={() => removeRedirectRow(index)}
+                  disabled={loading || redirectLoading}
+                  className="p-1.5 rounded-lg hover:bg-red-500/10 text-red-500 transition-colors disabled:opacity-50 shrink-0"
+                >
+                  <span className="material-symbols-outlined text-[18px]">delete</span>
+                </button>
+              </div>
+            ))}
+            <div className="flex flex-col sm:flex-row gap-2 pt-2 border-t border-border/50">
+              <Button type="button" variant="outline" icon="add" onClick={addRedirectRow} disabled={loading || redirectLoading} className="w-full sm:w-auto">
+                Add redirect
+              </Button>
+              <Button type="button" variant="primary" icon="save" loading={redirectLoading} onClick={saveRedirects} disabled={loading} className="w-full sm:w-auto">
+                Save
+              </Button>
+            </div>
+            {redirectStatus.message && (
+              <p className={`text-xs sm:text-sm ${redirectStatus.type === "error" ? "text-red-500" : "text-green-500"}`}>
+                {redirectStatus.message}
               </p>
             )}
           </div>

@@ -4,118 +4,48 @@ import { useState } from "react";
 import PropTypes from "prop-types";
 import { Button } from "@/shared/components";
 import { getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
+import ModelRow from "./ModelRow";
 
-function CompatibleModelRow({ modelId, fullModel, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting, source }) {
-  const borderColor = testStatus === "ok"
-    ? "border-green-500/40"
-    : testStatus === "error"
-    ? "border-red-500/40"
-    : "border-border";
-
-  const iconColor = testStatus === "ok"
-    ? "#22c55e"
-    : testStatus === "error"
-    ? "#ef4444"
-    : undefined;
-
-  return (
-    <div className={`flex items-center gap-3 p-3 rounded-lg border ${borderColor} hover:bg-sidebar/50`}>
-      <span
-        className="material-symbols-outlined text-base text-text-muted"
-        style={iconColor ? { color: iconColor } : undefined}
-      >
-        {testStatus === "ok" ? "check_circle" : testStatus === "error" ? "cancel" : "smart_toy"}
-      </span>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium truncate">{modelId}</p>
-        <div className="flex items-center gap-1 mt-1">
-          <code className="text-xs text-text-muted font-mono bg-sidebar px-1.5 py-0.5 rounded">{fullModel}</code>
-          {source && (
-            <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
-              {source}
-            </span>
-          )}
-          <div className="relative group/btn">
-            <button
-              onClick={() => onCopy(fullModel, `model-${modelId}`)}
-              className="p-0.5 hover:bg-sidebar rounded text-text-muted hover:text-primary"
-            >
-              <span className="material-symbols-outlined text-sm">
-                {copied === `model-${modelId}` ? "check" : "content_copy"}
-              </span>
-            </button>
-            <span className="pointer-events-none absolute top-5 left-1/2 -translate-x-1/2 text-[10px] text-text-muted whitespace-nowrap opacity-0 group-hover/btn:opacity-100 transition-opacity">
-              {copied === `model-${modelId}` ? "Copied!" : "Copy"}
-            </span>
-          </div>
-          {onTest && (
-            <div className="relative group/btn">
-              <button
-                onClick={onTest}
-                disabled={isTesting}
-                className="p-0.5 hover:bg-sidebar rounded text-text-muted hover:text-primary transition-colors"
-              >
-                <span className="material-symbols-outlined text-sm" style={isTesting ? { animation: "spin 1s linear infinite" } : undefined}>
-                  {isTesting ? "progress_activity" : "science"}
-                </span>
-              </button>
-              <span className="pointer-events-none absolute top-5 left-1/2 -translate-x-1/2 text-[10px] text-text-muted whitespace-nowrap opacity-0 group-hover/btn:opacity-100 transition-opacity">
-                {isTesting ? "Testing..." : "Test"}
-              </span>
-            </div>
-          )}
-        </div>
-      </div>
-      {onDeleteAlias && (
-        <button
-          onClick={onDeleteAlias}
-          className="p-1 hover:bg-red-50 rounded text-red-500"
-          title="Remove model"
-        >
-          <span className="material-symbols-outlined text-sm">delete</span>
-        </button>
-      )}
-    </div>
-  );
-}
-
-export default function CompatibleModelsSection({ providerStorageAlias, providerDisplayAlias, modelAliases, customModels, syncedModels, copied, onCopy, onDeleteAlias, onAddCustomModel, onDeleteCustomModel, connections, isAnthropic }) {
-  const [newModel, setNewModel] = useState("");
-  const [adding, setAdding] = useState(false);
+export default function CompatibleModelsSection({
+  providerStorageAlias,
+  providerDisplayAlias,
+  providerId,
+  modelAliases,
+  customModels,
+  syncedModels,
+  copied,
+  onCopy,
+  onDeleteAlias,
+  onAddCustomModel,
+  onDeleteCustomModel,
+  onDisableModel,
+  onEnableModel,
+  onEnableAll,
+  onDisableAll,
+  disabledModelIds = [],
+  connections,
+  isAnthropic,
+  getCaps,
+  modelTestResults = {},
+  testingModelIds,
+  onTestModel,
+  onShowAddModal,
+}) {
   const [importing, setImporting] = useState(false);
-  const [testingModelId, setTestingModelId] = useState(null);
-  const [modelTestResults, setModelTestResults] = useState({});
 
-  const handleTestModel = async (modelId) => {
-    if (testingModelId) return;
-    setTestingModelId(modelId);
-    try {
-      const res = await fetch("/api/models/test", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: `${providerStorageAlias}/${modelId}` }),
-      });
-      const data = await res.json();
-      setModelTestResults((prev) => ({ ...prev, [modelId]: data.ok ? "ok" : "error" }));
-    } catch {
-      setModelTestResults((prev) => ({ ...prev, [modelId]: "error" }));
-    } finally {
-      setTestingModelId(null);
-    }
-  };
-
+  // Build the full model list: custom + legacy aliases + synced (deduped by id).
   const allModels = getProviderCustomModelRows({
     customModels,
     modelAliases,
     providerAlias: providerStorageAlias,
     type: "llm",
   });
-  const existingModelIds = new Set(allModels.map((model) => model.id));
+  const existingIds = new Set(allModels.map((model) => model.id));
   for (const model of syncedModels || []) {
-    const modelId = model?.id || model?.name || model?.model;
-    if (typeof modelId !== "string" || !modelId.trim()) continue;
-    const id = modelId.trim();
-    if (existingModelIds.has(id)) continue;
+    const rawId = model?.id || model?.name || model?.model;
+    if (typeof rawId !== "string" || !rawId.trim()) continue;
+    const id = rawId.trim();
+    if (existingIds.has(id)) continue;
     allModels.push({
       id,
       name: model?.name || model?.displayName || model?.display_name || id,
@@ -123,27 +53,14 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
       alias: null,
       source: "synced",
     });
-    existingModelIds.add(id);
+    existingIds.add(id);
   }
 
-  const handleAdd = async () => {
-    if (!newModel.trim() || adding) return;
-    const modelId = newModel.trim();
-    if (allModels.some((model) => model.id === modelId)) {
-      alert("Model already exists for this provider.");
-      return;
-    }
-
-    setAdding(true);
-    try {
-      await onAddCustomModel(modelId);
-      setNewModel("");
-    } catch (error) {
-      console.log("Error adding model:", error);
-    } finally {
-      setAdding(false);
-    }
-  };
+  const byId = (a, b) => String(a.id).localeCompare(String(b.id), undefined, { numeric: true, sensitivity: "base" });
+  const disabledSet = new Set(disabledModelIds);
+  const displayModels = allModels.filter((model) => !disabledSet.has(model.id)).sort(byId);
+  const disabledDisplayModels = allModels.filter((model) => disabledSet.has(model.id)).sort(byId);
+  const activeIds = allModels.map((model) => model.id).filter((id) => !disabledSet.has(id));
 
   const handleImport = async () => {
     if (importing) return;
@@ -182,6 +99,35 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
   };
 
   const canImport = connections.some((conn) => conn.isActive !== false);
+  const hasConnections = connections.length > 0;
+
+  const renderModelRow = (model) => {
+    const isSynced = model.source === "synced";
+    return (
+      <ModelRow
+        key={`${model.source}-${providerStorageAlias}/${model.id}`}
+        model={{ id: model.id, name: model.name }}
+        fullModel={`${providerDisplayAlias}/${model.id}`}
+        alias={model.alias}
+        copied={copied}
+        onCopy={onCopy}
+        testStatus={modelTestResults[model.id]}
+        onTest={hasConnections ? () => onTestModel(model.id) : undefined}
+        isTesting={testingModelIds && testingModelIds.has(model.id)}
+        isCustom={!isSynced}
+        isFree={false}
+        onDeleteAlias={
+          isSynced
+            ? undefined
+            : model.source === "custom"
+              ? () => onDeleteCustomModel(model.id)
+              : () => onDeleteAlias(model.alias)
+        }
+        onDisable={isSynced ? () => onDisableModel(model.id) : undefined}
+        caps={getCaps ? getCaps(`${providerId}/${model.id}`) : undefined}
+      />
+    );
+  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -189,25 +135,23 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
         Add {isAnthropic ? "Anthropic" : "OpenAI"}-compatible models manually or import them from the /models endpoint.
       </p>
 
-      <div className="flex items-end gap-2 flex-wrap">
-        <div className="flex-1 min-w-[240px]">
-          <label htmlFor="new-compatible-model-input" className="text-xs text-text-muted mb-1 block">Model ID</label>
-          <input
-            id="new-compatible-model-input"
-            type="text"
-            value={newModel}
-            onChange={(e) => setNewModel(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleAdd()}
-            placeholder={isAnthropic ? "claude-3-opus-20240229" : "gpt-4o"}
-            className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
-          />
-        </div>
-        <Button size="sm" icon="add" onClick={handleAdd} disabled={!newModel.trim() || adding}>
-          {adding ? "Adding..." : "Add"}
+      <div className="flex items-center gap-2 flex-wrap">
+        <Button size="sm" icon="add" onClick={onShowAddModal}>
+          Add Model
         </Button>
         <Button size="sm" variant="secondary" icon="download" onClick={handleImport} disabled={!canImport || importing}>
           {importing ? "Importing..." : "Import from /models"}
         </Button>
+        {disabledModelIds.length > 0 && (
+          <Button size="sm" variant="secondary" icon="restart_alt" onClick={onEnableAll}>
+            Active All
+          </Button>
+        )}
+        {activeIds.length > 0 && (
+          <Button size="sm" variant="secondary" icon="block" onClick={() => onDisableAll(activeIds)}>
+            Disable All
+          </Button>
+        )}
       </div>
 
       {!canImport && (
@@ -216,22 +160,30 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
         </p>
       )}
 
-      {allModels.length > 0 && (
-        <div className="flex flex-col gap-3">
-          {allModels.map(({ id, alias, source }) => (
-            <CompatibleModelRow
-              key={`${source}-${providerStorageAlias}/${id}`}
-              modelId={id}
-              fullModel={`${providerDisplayAlias}/${id}`}
-              copied={copied}
-              onCopy={onCopy}
-              onDeleteAlias={source === "synced" ? null : () => source === "custom" ? onDeleteCustomModel(id) : onDeleteAlias(alias)}
-              onTest={connections.length > 0 ? () => handleTestModel(id) : undefined}
-              testStatus={modelTestResults[id]}
-              isTesting={testingModelId === id}
-              source={source}
-            />
-          ))}
+      {displayModels.length > 0 ? (
+        <div className="flex flex-wrap gap-3">
+          {displayModels.map((model) => renderModelRow(model, false))}
+        </div>
+      ) : (
+        <p className="text-xs text-text-muted italic">No models added yet. Use “Add Model” or “Import from /models”.</p>
+      )}
+
+      {disabledDisplayModels.length > 0 && (
+        <div className="w-full mt-2">
+          <p className="text-xs text-text-muted mb-2">Disabled models ({disabledDisplayModels.length}):</p>
+          <div className="flex flex-wrap gap-2">
+            {disabledDisplayModels.map((model) => (
+              <button
+                key={`disabled-${model.source}-${model.id}`}
+                onClick={() => onEnableModel(model.id)}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-dashed border-black/10 dark:border-white/10 text-xs text-text-muted hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors"
+                title="Restore model"
+              >
+                <span className="material-symbols-outlined text-[13px]">add</span>
+                {model.id}
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -241,6 +193,7 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
 CompatibleModelsSection.propTypes = {
   providerStorageAlias: PropTypes.string.isRequired,
   providerDisplayAlias: PropTypes.string.isRequired,
+  providerId: PropTypes.string.isRequired,
   modelAliases: PropTypes.object.isRequired,
   customModels: PropTypes.arrayOf(PropTypes.object),
   syncedModels: PropTypes.arrayOf(PropTypes.object),
@@ -249,9 +202,19 @@ CompatibleModelsSection.propTypes = {
   onDeleteAlias: PropTypes.func.isRequired,
   onAddCustomModel: PropTypes.func.isRequired,
   onDeleteCustomModel: PropTypes.func.isRequired,
+  onDisableModel: PropTypes.func,
+  onEnableModel: PropTypes.func,
+  onEnableAll: PropTypes.func,
+  onDisableAll: PropTypes.func,
+  disabledModelIds: PropTypes.arrayOf(PropTypes.string),
   connections: PropTypes.arrayOf(PropTypes.shape({
     id: PropTypes.string,
     isActive: PropTypes.bool,
   })).isRequired,
   isAnthropic: PropTypes.bool,
+  getCaps: PropTypes.func,
+  modelTestResults: PropTypes.object,
+  testingModelIds: PropTypes.object,
+  onTestModel: PropTypes.func,
+  onShowAddModal: PropTypes.func,
 };

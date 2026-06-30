@@ -1000,23 +1000,90 @@ export default function ProviderDetailPage() {
     }
   };
 
+  const [syncingModels, setSyncingModels] = useState(false);
+  const [deletingAllModels, setDeletingAllModels] = useState(false);
+
+  // Sync (import) fresh model list from the active provider connection.
+  const handleSyncModels = async () => {
+    const activeConnection = connections.find((conn) => conn.isActive !== false);
+    if (!activeConnection) return;
+    if (syncingModels) return;
+    setSyncingModels(true);
+    try {
+      const res = await fetch(`/api/providers/${activeConnection.id}/sync-models`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setModelsTestError(data.error || "Failed to sync models");
+        return;
+      }
+      setModelsTestError("");
+      await fetchConnections();
+      const count = data.syncedModels ?? data.models?.length ?? 0;
+      setConfirmState({ title: "Sync complete", message: `Imported ${count} model${count === 1 ? "" : "s"} from the provider.`, onConfirm: () => setConfirmState(null) });
+    } catch (error) {
+      setModelsTestError("Network error");
+    } finally {
+      setSyncingModels(false);
+    }
+  };
+
+  // Delete all custom models + aliases (+ synced cache) for this provider, then re-sync fresh.
+  const handleDeleteAllModels = async () => {
+    if (deletingAllModels) return;
+    setConfirmState({
+      title: "Delete All Models",
+      message: `Remove ALL custom models, aliases and the synced cache for this provider? This cannot be undone.`,
+      onConfirm: async () => {
+        setConfirmState(null);
+        setDeletingAllModels(true);
+        try {
+          const res = await fetch(`/api/models/custom?providerAlias=${encodeURIComponent(providerStorageAlias)}&all=1&clearSynced=1&type=all`, { method: "DELETE" });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            setModelsTestError(data.error || "Failed to delete models");
+            return;
+          }
+          setModelsTestError("");
+          setModelTestResults({});
+          setDisabledModelIds([]);
+          await Promise.all([fetchCustomModels(), fetchAliases()]);
+          await fetchConnections();
+        } catch (error) {
+          setModelsTestError("Network error");
+        } finally {
+          setDeletingAllModels(false);
+        }
+      }
+    });
+  };
+
   const renderModelsSection = () => {
     if (isCompatible) {
       return (
         <CompatibleModelsSection
           providerStorageAlias={providerStorageAlias}
           providerDisplayAlias={providerDisplayAlias}
+          providerId={providerId}
           modelAliases={modelAliases}
           customModels={customModels}
           copied={copied}
           onCopy={copy}
-          onSetAlias={handleSetAlias}
           onDeleteAlias={handleDeleteAlias}
           onAddCustomModel={(modelId) => handleAddCustomModel(modelId, "llm", providerStorageAlias)}
           onDeleteCustomModel={(modelId) => handleDeleteCustomModel(modelId, "llm", providerStorageAlias)}
+          onDisableModel={handleDisableModel}
+          onEnableModel={handleEnableModel}
+          onEnableAll={handleEnableAll}
+          onDisableAll={handleDisableAll}
+          disabledModelIds={disabledModelIds}
           connections={connections}
           syncedModels={syncedModels}
           isAnthropic={isAnthropicCompatible}
+          getCaps={getCaps}
+          modelTestResults={modelTestResults}
+          testingModelIds={testingModelIds}
+          onTestModel={handleTestModel}
+          onShowAddModal={() => setShowAddCustomModel(true)}
         />
       );
     }
@@ -1026,16 +1093,17 @@ export default function ProviderDetailPage() {
       ...models,
       ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
     ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; });
+    const byId = (a, b) => String(a.id).localeCompare(String(b.id), undefined, { numeric: true, sensitivity: "base" });
     const disabledSet = new Set(disabledModelIds);
-    const displayModels = allModels.filter((m) => !disabledSet.has(m.id));
-    const disabledDisplayModels = allModels.filter((m) => disabledSet.has(m.id));
+    const displayModels = allModels.filter((m) => !disabledSet.has(m.id)).sort(byId);
+    const disabledDisplayModels = allModels.filter((m) => disabledSet.has(m.id)).sort(byId);
     const customModelRows = getProviderCustomModelRows({
       customModels,
       modelAliases,
       providerAlias: providerStorageAlias,
       builtInModels: models,
       type: "llm",
-    });
+    }).sort(byId);
 
     return (
       <div className="flex flex-wrap gap-3">
@@ -1580,14 +1648,27 @@ export default function ProviderDetailPage() {
           <h2 className="text-lg font-semibold">
             {"Available Models"}
           </h2>
-          {!isCompatible && (() => {
-            const allIds = [
-              ...models,
-              ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
-            ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; }).map((m) => m.id);
-            const activeIds = allIds.filter((id) => !disabledModelIds.includes(id));
+          {(() => {
+            const compatibleAllIds = isCompatible
+              ? (() => {
+                  const rows = getProviderCustomModelRows({ customModels, modelAliases, providerAlias: providerStorageAlias, type: "llm" });
+                  const ids = new Set(rows.map((r) => r.id));
+                  for (const m of syncedModels || []) {
+                    const id = (m?.id || m?.name || m?.model || "").trim();
+                    if (id) ids.add(id);
+                  }
+                  return [...ids];
+                })()
+              : [
+                  ...models,
+                  ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
+                ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; }).map((m) => m.id);
+            const activeIds = compatibleAllIds.filter((id) => !disabledModelIds.includes(id));
+            const canSyncHere = isCompatible
+              ? connections.some((conn) => conn.isActive !== false)
+              : connections.length > 0 || isFreeNoAuth;
             return (
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 {disabledModelIds.length > 0 && (
                   <Button size="sm" variant="secondary" icon="restart_alt" onClick={handleEnableAll}>
                     Active All
@@ -1596,6 +1677,16 @@ export default function ProviderDetailPage() {
                 {activeIds.length > 0 && (
                   <Button size="sm" variant="secondary" icon="block" onClick={() => handleDisableAll(activeIds)}>
                     Disable All
+                  </Button>
+                )}
+                {isCompatible && canSyncHere && (
+                  <Button size="sm" variant="secondary" icon="sync" onClick={handleSyncModels} disabled={syncingModels}>
+                    {syncingModels ? "Syncing..." : "Sync Models"}
+                  </Button>
+                )}
+                {isCompatible && (
+                  <Button size="sm" variant="secondary" icon="delete_sweep" onClick={handleDeleteAllModels} disabled={deletingAllModels}>
+                    {deletingAllModels ? "Deleting..." : "Delete All"}
                   </Button>
                 )}
               </div>
@@ -1681,18 +1772,16 @@ export default function ProviderDetailPage() {
           isAnthropic={isAnthropicCompatible}
         />
       )}
-      {!isCompatible && (
-        <AddCustomModelModal
-          isOpen={showAddCustomModel}
-          providerAlias={providerStorageAlias}
-          providerDisplayAlias={providerDisplayAlias}
-          onSave={async (modelId) => {
-            await handleAddCustomModel(modelId, "llm", providerStorageAlias);
-            setShowAddCustomModel(false);
-          }}
-          onClose={() => setShowAddCustomModel(false)}
-        />
-      )}
+      <AddCustomModelModal
+        isOpen={showAddCustomModel}
+        providerAlias={providerStorageAlias}
+        providerDisplayAlias={providerDisplayAlias}
+        onSave={async (modelId) => {
+          await handleAddCustomModel(modelId, "llm", providerStorageAlias);
+          setShowAddCustomModel(false);
+        }}
+        onClose={() => setShowAddCustomModel(false)}
+      />
 
       {providerId === "codex" && (
         <BulkImportCodexModal

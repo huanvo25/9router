@@ -14,6 +14,39 @@ export { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER };
 // sharedEncoder is stateless — safe to share across streams
 const sharedEncoder = new TextEncoder();
 
+function textFromContentPart(part) {
+  if (typeof part === "string") return part;
+  if (!part || typeof part !== "object") return "";
+  if (typeof part.text === "string") return part.text;
+  if (typeof part.output_text === "string") return part.output_text;
+  if (Array.isArray(part.content)) return part.content.map(textFromContentPart).filter(Boolean).join("");
+  return "";
+}
+
+function normalizeAssistantContent(value) {
+  if (Array.isArray(value)) return value.map(textFromContentPart).filter(Boolean).join("");
+  if (value && typeof value === "object") return textFromContentPart(value);
+  return value;
+}
+
+function normalizeOpenAIChunkTextFields(parsed) {
+  let changed = false;
+  if (!Array.isArray(parsed?.choices)) return changed;
+  for (const choice of parsed.choices) {
+    const delta = choice?.delta;
+    if (delta && Array.isArray(delta.content)) {
+      delta.content = normalizeAssistantContent(delta.content);
+      changed = true;
+    }
+    const message = choice?.message;
+    if (message && Array.isArray(message.content)) {
+      message.content = normalizeAssistantContent(message.content);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 /**
  * Stream modes
  */
@@ -128,6 +161,10 @@ export function createSSEStream(options = {}) {
                     fieldsInjected = true;
                   }
                 }
+              }
+
+              if (normalizeOpenAIChunkTextFields(parsed)) {
+                fieldsInjected = true;
               }
 
               if (!hasValuableContent(parsed, FORMATS.OPENAI)) {

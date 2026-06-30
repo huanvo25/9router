@@ -49,6 +49,34 @@ export async function deleteCustomModel({ providerAlias, id, type = "llm" }) {
   await customKv.remove(customKey(providerAlias, id, type));
 }
 
+// Bulk-clear all custom models for a provider (optionally filtered by type).
+export async function clearCustomModelsForProvider(providerAlias, type = null) {
+  const all = await customKv.getAll();
+  const db = await getAdapter();
+  db.transaction(() => {
+    for (const key of Object.keys(all)) {
+      const [pa, , tp] = key.split("|");
+      if (pa !== providerAlias) continue;
+      if (type && tp !== type) continue;
+      db.run(`DELETE FROM kv WHERE scope = 'customModels' AND key = ?`, [key]);
+    }
+  });
+}
+
+// Bulk-clear all aliases pointing at a provider (value starts with `${providerAlias}/`).
+export async function clearAliasesForProvider(providerAlias) {
+  const all = await aliasKv.getAll();
+  const db = await getAdapter();
+  const prefix = `${providerAlias}/`;
+  db.transaction(() => {
+    for (const [alias, fullModel] of Object.entries(all)) {
+      if (typeof fullModel === "string" && fullModel.startsWith(prefix)) {
+        db.run(`DELETE FROM kv WHERE scope = 'modelAliases' AND key = ?`, [alias]);
+      }
+    }
+  });
+}
+
 // syncedAvailableModels: key=providerId, value={ models, syncedAt, connectionId }
 export async function getSyncedAvailableModels(providerId) {
   if (!providerId) return [];

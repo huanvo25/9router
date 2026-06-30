@@ -39,6 +39,32 @@ function estimateContentLengthFromResponse(body) {
 /**
  * Translate non-streaming response body from provider format → OpenAI format.
  */
+function stripThinkingTags(text) {
+  if (typeof text !== "string") return text;
+  return text.replace(/<thinking>[\s\S]*?<\/thinking>/gi, "").trim();
+}
+
+function flattenContentArray(value) {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(flattenContentArray).filter(Boolean).join("");
+  if (value && typeof value === "object") {
+    if (typeof value.text === "string") return value.text;
+    if (typeof value.output_text === "string") return value.output_text;
+    if (Array.isArray(value.content)) return value.content.map(flattenContentArray).filter(Boolean).join("");
+  }
+  return value;
+}
+
+function normalizeNonStreamingContent(resp) {
+  if (!resp?.choices) return resp;
+  for (const choice of resp.choices) {
+    const msg = choice?.message;
+    if (msg && Array.isArray(msg.content)) {
+      msg.content = flattenContentArray(msg.content);
+    }
+  }
+  return resp;
+}
 export function translateNonStreamingResponse(responseBody, targetFormat, sourceFormat) {
   if (targetFormat === sourceFormat || targetFormat === FORMATS.OPENAI) return responseBody;
 
@@ -216,6 +242,9 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     ? translateNonStreamingResponse(responseBody, targetFormat, sourceFormat)
     : responseBody;
 
+  // Flatten array content (e.g. [{type:"output_text", text:"..."}]) → string
+  normalizeNonStreamingContent(translatedResponse);
+
   // Fix finish_reason for tool_calls: some providers return non-standard values (e.g. "other")
   if (translatedResponse?.choices?.[0]) {
     const choice = translatedResponse.choices[0];
@@ -245,6 +274,9 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   // reasoning_content is the only useful output and must be preserved.
   if (translatedResponse?.choices) {
     for (const choice of translatedResponse.choices) {
+      if (typeof choice?.message?.content === "string") {
+        choice.message.content = stripThinkingTags(choice.message.content);
+      }
       if (choice?.message?.reasoning_content && choice.message.content) {
         delete choice.message.reasoning_content;
       }
