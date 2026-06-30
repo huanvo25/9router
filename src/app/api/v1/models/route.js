@@ -339,6 +339,15 @@ export async function buildModelsList(kindFilter) {
               : providerModels.map((model) => model.id)
           );
 
+      if (!hasExplicitEnabledModels && syncedModels.length > 0 && kindFilter.some((kind) => kind !== LLM_KIND)) {
+        rawModelIds = Array.from(new Set([
+          ...rawModelIds,
+          ...providerModels
+            .filter((model) => kindFilter.includes(modelKind(model)))
+            .map((model) => model.id),
+        ]));
+      }
+
       if (isCompatibleProvider && rawModelIds.length === 0 && !UPSTREAM_CONNECTION_RE.test(providerId)) {
         rawModelIds = await fetchCompatibleModelIds(conn);
       }
