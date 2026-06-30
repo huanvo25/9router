@@ -19,6 +19,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
 
   const isAzure = provider === "azure";
   const isCloudflareAi = provider === "cloudflare-ai";
+  const supportsProviderBaseUrl = AI_PROVIDERS?.[provider]?.hasProviderSpecificData === true;
   const providerRegions = AI_PROVIDERS?.[provider]?.regions || null;
   const defaultRegion = AI_PROVIDERS?.[provider]?.defaultRegion || providerRegions?.[0]?.id || "";
 
@@ -28,6 +29,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     priority: 1,
     proxyPoolId: NONE_PROXY_POOL_VALUE,
     ollamaHostUrl: "",
+    providerBaseUrl: "",
   });
   const [azureData, setAzureData] = useState({
     azureEndpoint: "",
@@ -58,6 +60,9 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     }
     if (isCloudflareAi) {
       return { accountId: cloudflareData.accountId };
+    }
+    if (supportsProviderBaseUrl && formData.providerBaseUrl.trim()) {
+      return { baseUrl: formData.providerBaseUrl.trim() };
     }
     if (providerRegions && region) {
       return { region };
@@ -229,6 +234,14 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
           <p className="text-xs text-text-muted">
             Use a direct xAI API key from console.x.ai. This is separate from Grok Build OAuth.
           </p>
+        )}
+        {supportsProviderBaseUrl && (
+          <Input
+            label="Base URL"
+            value={formData.providerBaseUrl}
+            onChange={(e) => setFormData({ ...formData, providerBaseUrl: e.target.value })}
+            placeholder="https://api.cliproxyapi.com/v1"
+          />
         )}
         {isCookie && authHint && (
           <p className="text-xs text-text-muted">

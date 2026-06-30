@@ -20,6 +20,7 @@ import p17 from "./cloudflare-ai.js";
 import p18 from "./codebuddy-cn.js";
 import p19 from "./codex.js";
 import p20 from "./cohere.js";
+import p105 from "./cliproxyapi.js";
 import p21 from "./comfyui.js";
 import p22 from "./commandcode.js";
 import p23 from "./coqui.js";
@@ -210,5 +211,6 @@ export default [
   p101,
   p102,
   p103,
-  p104
+  p104,
+  p105
 ];

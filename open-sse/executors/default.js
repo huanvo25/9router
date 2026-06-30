@@ -7,6 +7,7 @@ import { getCachedClaudeHeaders } from "../utils/claudeHeaderCache.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
+import { resolveProviderEndpoint } from "../utils/providerBaseUrl.js";
 
 // Auth header descriptors — derived from registry transport.auth, fallback to hardcoded defaults.
 const BEARER = { combined: true, header: "Authorization", scheme: "bearer" };
@@ -119,6 +120,10 @@ export class DefaultExecutor extends BaseExecutor {
     // Runtime transport (multi-endpoint providers): use the sourceFormat-matched endpoint
     const rt = credentials?.runtimeTransport;
     if (rt?.baseUrl) {
+      if (rt.quirks?.configurableBaseUrl || this.config.quirks?.configurableBaseUrl) {
+        const path = rt.format === "openai-responses" ? "responses" : "chat/completions";
+        return resolveProviderEndpoint(this.provider, path, credentials, rt.baseUrl);
+      }
       return rt.urlSuffix ? `${rt.baseUrl}${rt.urlSuffix}` : rt.baseUrl;
     }
     if (this.provider?.startsWith?.("openai-compatible-")) {

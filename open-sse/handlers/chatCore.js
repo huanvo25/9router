@@ -26,6 +26,7 @@ import { compressWithHeadroom, formatHeadroomLog, formatHeadroomSizeLog, isHeadr
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
+import { isPromptCacheEnabled, stripPromptCacheHints } from "../utils/promptCacheControl.js";
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -34,9 +35,11 @@ import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
  * @param {object} options.credentials - Provider credentials
  * @param {string} options.sourceFormatOverride - Override detected source format (e.g. "openai-responses")
  */
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, sourceFormatOverride, providerThinking }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, sourceFormatOverride, providerThinking, providerPromptCache }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
+  const promptCacheEnabled = isPromptCacheEnabled(provider, providerPromptCache);
+  if (credentials) credentials.promptCacheEnabled = promptCacheEnabled;
 
   const sourceFormat = sourceFormatOverride || detectFormat(body);
 
@@ -183,6 +186,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   if (ponytailEnabled && ponytailLevel) {
     injectPonytail(translatedBody, finalFormat, ponytailLevel);
     log?.debug?.("PONYTAIL", `${ponytailLevel} | ${finalFormat}`);
+  }
+
+  if (!promptCacheEnabled) {
+    stripPromptCacheHints(translatedBody);
+    log?.debug?.("CACHE", `prompt cache disabled for ${provider}`);
   }
 
   const executor = getExecutor(provider);

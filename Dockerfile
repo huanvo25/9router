@@ -35,6 +35,10 @@ COPY --from=builder /app/open-sse ./open-sse
 COPY --from=builder /app/src/mitm ./src/mitm
 # Standalone node_modules may omit deps only required by the MITM child process.
 COPY --from=builder /app/node_modules/node-forge ./node_modules/node-forge
+COPY --from=builder /app/node_modules/http-proxy ./node_modules/http-proxy
+COPY --from=builder /app/node_modules/eventemitter3 ./node_modules/eventemitter3
+COPY --from=builder /app/node_modules/requires-port ./node_modules/requires-port
+COPY --from=builder /app/node_modules/follow-redirects ./node_modules/follow-redirects
 # Ensure `next` is available at runtime in case tracing did not include it.
 COPY --from=builder /app/node_modules/next ./node_modules/next
 

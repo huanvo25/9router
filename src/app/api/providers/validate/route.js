@@ -3,6 +3,7 @@ import { getProviderNodeById } from "@/models";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost, resolveXiaomiTokenplanBaseUrl, PROVIDERS } from "open-sse/config/providers.js";
+import { resolveProviderEndpoint } from "open-sse/utils/providerBaseUrl.js";
 import { openaiToCommandCodeRequest } from "open-sse/translator/request/openai-to-commandcode.js";
 import { normalizeProviderId } from "@/lib/providerNormalization";
 
@@ -252,6 +253,15 @@ export async function POST(request) {
       }
 
       switch (provider) {
+        case "cliproxyapi": {
+          const url = resolveProviderEndpoint(provider, "models", { providerSpecificData }, PROVIDERS[provider]?.validateUrl);
+          const res = await fetch(url, {
+            headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+          });
+          isValid = res.status !== 401 && res.status !== 403;
+          break;
+        }
+
         case "openai":
           const openaiRes = await fetch("https://api.openai.com/v1/models", {
             headers: { "Authorization": `Bearer ${apiKey}` },

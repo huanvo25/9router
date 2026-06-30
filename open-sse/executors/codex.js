@@ -338,7 +338,7 @@ export class CodexExecutor extends BaseExecutor {
     body.store = false;
 
     // Inject prompt_cache_key for stable Codex prompt caching
-    if (!body.prompt_cache_key && this._currentSessionId) {
+    if (credentials?.promptCacheEnabled !== false && !body.prompt_cache_key && this._currentSessionId) {
       body.prompt_cache_key = this._currentSessionId;
     }
 

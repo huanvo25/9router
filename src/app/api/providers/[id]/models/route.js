@@ -4,6 +4,7 @@ import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/sha
 import { ANTIGRAVITY_CONFIG, GEMINI_CONFIG } from "@/lib/oauth/constants/oauth";
 import { refreshGoogleToken, updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveOllamaLocalHost } from "open-sse/config/providers.js";
+import { resolveProviderEndpoint } from "open-sse/utils/providerBaseUrl.js";
 import { getModelsByProviderId } from "open-sse/config/providerModels.js";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { resolveKimchiModels } from "open-sse/services/kimchiModels.js";
@@ -290,6 +291,7 @@ const PROVIDER_MODELS_CONFIG = {
   nvidia: createOpenAIModelsConfig("https://integrate.api.nvidia.com/v1/models"),
   assemblyai: createOpenAIModelsConfig("https://api.assemblyai.com/v1/models"),
   "vercel-ai-gateway": createOpenAIModelsConfig("https://ai-gateway.vercel.sh/v1/models"),
+  cliproxyapi: createOpenAIModelsConfig("https://api.cliproxyapi.com/v1/models"),
   kimchi: {
     customResolver: async (connection) => {
       const result = await resolveKimchiModels({
@@ -530,6 +532,9 @@ export async function fetchModelsForConnection(connection) {
     let url = config.url;
     if (connection.provider === "qwen") {
       url = resolveQwenModelsUrl(connection);
+    }
+    if (connection.provider === "cliproxyapi") {
+      url = resolveProviderEndpoint("cliproxyapi", "models", connection, url);
     }
     if (config.authQuery) {
       url += `?${config.authQuery}=${token}`;

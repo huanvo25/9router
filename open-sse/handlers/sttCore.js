@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createErrorResult } from "../utils/error.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
+import { resolveMediaEndpoint } from "../utils/providerBaseUrl.js";
 
 // Build auth headers from sttConfig + token
 function buildAuthHeaders(cfg, token) {
@@ -170,8 +171,9 @@ export async function handleSttCore({ provider, model, formData, credentials, st
   const file = formData.get("file");
   if (!file) return createErrorResult(HTTP_STATUS.BAD_REQUEST, "Missing required field: file");
 
-  const cfg = sttConfig;
+  const cfg = sttConfig ? { ...sttConfig } : null;
   if (!cfg) return createErrorResult(HTTP_STATUS.BAD_REQUEST, `Provider '${provider}' does not support STT`);
+  cfg.baseUrl = resolveMediaEndpoint(provider, "stt", "audio/transcriptions", credentials) || cfg.baseUrl;
 
   const token = cfg.authType === "none" ? null : (credentials?.apiKey || credentials?.accessToken);
   if (cfg.authType !== "none" && !token) {

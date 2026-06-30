@@ -25,8 +25,13 @@ export default {
   },
   transport: {
     baseUrl: "https://api.openai.com/v1/chat/completions",
+    responsesUrl: "https://api.openai.com/v1/responses",
     forceStream: true,
   },
+  transports: [
+    { format: "openai", baseUrl: "https://api.openai.com/v1/chat/completions" },
+    { format: "openai-responses", baseUrl: "https://api.openai.com/v1/responses" },
+  ],
   models: [
     { id: "gpt-5.4", name: "GPT-5.4" },
     { id: "gpt-5.4-mini", name: "GPT-5.4 Mini" },
@@ -57,7 +62,8 @@ export default {
     { id: "whisper-1", name: "Whisper 1", params: ["language","response_format","temperature","prompt"], kind: "stt" },
     { id: "gpt-4o-transcribe", name: "GPT-4o Transcribe", params: ["language","response_format","temperature","prompt"], kind: "stt" },
     { id: "gpt-4o-mini-transcribe", name: "GPT-4o Mini Transcribe", params: ["language","response_format","temperature","prompt"], kind: "stt" },
-    { id: "gpt-image-1", name: "GPT Image 1", params: ["n","size","quality","response_format"], kind: "image" },
+    { id: "gpt-image-2", name: "GPT Image 2", capabilities: ["text2img","edit"], params: ["n","size","quality","background","output_format","response_format"], kind: "image" },
+    { id: "gpt-image-1", name: "GPT Image 1", capabilities: ["text2img","edit"], params: ["n","size","quality","background","output_format","response_format"], kind: "image" },
     { id: "dall-e-3", name: "DALL-E 3", params: ["size","quality","style","response_format"], kind: "image" },
     { id: "dall-e-2", name: "DALL-E 2", params: ["n","size","response_format"], kind: "image" },
   ],
@@ -76,6 +82,10 @@ export default {
     format: "openai",
   },
   embeddingConfig: { baseUrl: "https://api.openai.com/v1/embeddings", authType: "apikey", authHeader: "bearer" },
-  imageConfig: { baseUrl: "https://api.openai.com/v1/images/generations" },
+  imageConfig: {
+    baseUrl: "https://api.openai.com/v1/images/generations",
+    editsUrl: "https://api.openai.com/v1/images/edits",
+    variationsUrl: "https://api.openai.com/v1/images/variations",
+  },
   searchViaChat: { defaultModel: "gpt-4o-mini", pricingUrl: "https://openai.com/api/pricing" },
 };

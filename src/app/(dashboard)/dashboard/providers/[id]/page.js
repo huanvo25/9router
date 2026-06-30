@@ -63,6 +63,7 @@ export default function ProviderDetailPage() {
   const [providerStrategy, setProviderStrategy] = useState(null);
   const [providerStickyLimit, setProviderStickyLimit] = useState("");
   const [thinkingMode, setThinkingMode] = useState("auto");
+  const [promptCacheEnabled, setPromptCacheEnabled] = useState(true);
   const [autoPing, setAutoPing] = useState({ enabled: false, connections: {} });
   const [suggestedModels, setSuggestedModels] = useState([]);
   const [syncedModels, setSyncedModels] = useState([]);
@@ -284,6 +285,8 @@ export default function ProviderDetailPage() {
       // Load per-provider thinking config
       const thinkingCfg = (settingsData.providerThinking || {})[providerId] || {};
       setThinkingMode(thinkingCfg.mode || "auto");
+      const promptCacheCfg = (settingsData.providerPromptCache || {})[providerId] || {};
+      setPromptCacheEnabled(typeof promptCacheCfg.enabled === "boolean" ? promptCacheCfg.enabled : providerInfo?.promptCacheDefault !== false);
       const autoPingSettingsKey = AUTO_PING_SETTINGS_KEYS[providerId];
       const apCfg = autoPingSettingsKey ? settingsData[autoPingSettingsKey] || {} : {};
       setAutoPing({ enabled: apCfg.enabled === true, connections: apCfg.connections || {} });
@@ -310,7 +313,7 @@ export default function ProviderDetailPage() {
     } finally {
       setLoading(false);
     }
-  }, [providerId, isCompatible]);
+  }, [providerId, isCompatible, providerInfo?.promptCacheDefault]);
 
   const handleUpdateNode = async (formData) => {
     try {
@@ -397,6 +400,33 @@ export default function ProviderDetailPage() {
   const handleThinkingModeChange = (mode) => {
     setThinkingMode(mode);
     saveThinkingConfig(mode);
+  };
+
+  const savePromptCacheConfig = async (enabled) => {
+    try {
+      const settingsRes = await fetch("/api/settings", { cache: "no-store" });
+      const settingsData = settingsRes.ok ? await settingsRes.json() : {};
+      const current = settingsData.providerPromptCache || {};
+      const defaultEnabled = providerInfo?.promptCacheDefault !== false;
+      const updated = { ...current };
+      if (enabled === defaultEnabled) {
+        delete updated[providerId];
+      } else {
+        updated[providerId] = { enabled };
+      }
+      await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerPromptCache: updated }),
+      });
+    } catch (error) {
+      console.log("Error saving prompt cache config:", error);
+    }
+  };
+
+  const handlePromptCacheToggle = (enabled) => {
+    setPromptCacheEnabled(enabled);
+    savePromptCacheConfig(enabled);
   };
 
   const saveAutoPing = async (next) => {
@@ -1486,6 +1516,13 @@ export default function ProviderDetailPage() {
                 </div>
               )} */}
               {/* Round Robin toggle */}
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-text-muted font-medium">Prompt Cache</span>
+                <Toggle
+                  checked={promptCacheEnabled}
+                  onChange={handlePromptCacheToggle}
+                />
+              </div>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs text-text-muted font-medium">Round Robin</span>
                 <Toggle

@@ -1,5 +1,6 @@
 // OpenAI-compatible adapter (used by openai, minimax, openrouter, recraft)
 import { PROVIDER_MEDIA } from "../../providers/index.js";
+import { resolveMediaEndpoint } from "../../utils/providerBaseUrl.js";
 
 const imageCfg = (id) => PROVIDER_MEDIA[id]?.imageConfig || {};
 const imageUrl = (id) => imageCfg(id).baseUrl;
@@ -7,7 +8,7 @@ const imageUrl = (id) => imageCfg(id).baseUrl;
 export default function createOpenAIAdapter(providerId) {
   const cfg = imageCfg(providerId);
   return {
-    buildUrl: () => imageUrl(providerId),
+    buildUrl: (_model, creds) => resolveMediaEndpoint(providerId, "image", "images/generations", creds) || imageUrl(providerId),
     buildHeaders: (creds) => {
       const headers = { "Content-Type": "application/json", ...(cfg.headers || {}) };
       const key = creds?.apiKey || creds?.accessToken;
@@ -15,11 +16,14 @@ export default function createOpenAIAdapter(providerId) {
       return headers;
     },
     buildBody: (model, body) => {
-      const { prompt, n = 1, size = "1024x1024", quality, style, response_format } = body;
+      const { prompt, n = 1, size = "1024x1024", quality, style, response_format, background, output_format, user } = body;
       const full = { model, prompt, n, size };
       if (quality) full.quality = quality;
       if (style) full.style = style;
       if (response_format) full.response_format = response_format;
+      if (background) full.background = background;
+      if (output_format) full.output_format = output_format;
+      if (user) full.user = user;
       // bodyFields whitelist (e.g. xAI accepts only model/prompt/n/response_format)
       if (Array.isArray(cfg.bodyFields)) {
         const req = {};
