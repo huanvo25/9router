@@ -43,6 +43,7 @@ export default function Sidebar({ onClose }) {
   const [mediaOpen, setMediaOpen] = useState(false);
   const [showRemoteModal, setShowRemoteModal] = useState(false);
   const [isDisconnected, setIsDisconnected] = useState(false);
+  const [versionInfo, setVersionInfo] = useState(null);
   const [updateInfo, setUpdateInfo] = useState(null);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
@@ -63,9 +64,14 @@ export default function Sidebar({ onClose }) {
   useEffect(() => {
     fetch("/api/version")
       .then(res => res.json())
-      .then(data => { if (data.hasUpdate) setUpdateInfo(data); })
+      .then(data => {
+        setVersionInfo(data);
+        setUpdateInfo(data.hasUpdate ? data : null);
+      })
       .catch(() => {});
   }, []);
+
+  const customVersion = versionInfo?.customVersion || APP_CONFIG.customVersion;
 
   const isActive = (href) => {
     if (href === "/dashboard/endpoint") {
@@ -127,6 +133,9 @@ export default function Sidebar({ onClose }) {
                 {APP_CONFIG.name}
               </h1>
               <span className="text-xs text-text-muted">v{APP_CONFIG.version}</span>
+              {customVersion && (
+                <span className="text-[10px] text-text-muted/75">Huan v{customVersion}</span>
+              )}
             </div>
           </Link>
           {updateInfo && (

@@ -1,10 +1,13 @@
 import pkg from "../../../package.json" with { type: "json" };
+import { CUSTOM_VERSION, CUSTOM_VERSION_INFO } from "./customVersion.js";
 
 // App configuration
 export const APP_CONFIG = {
   name: "9Router Proxy",
   description: "AI Infrastructure Management",
   version: pkg.version,
+  customVersion: CUSTOM_VERSION,
+  customVersionInfo: CUSTOM_VERSION_INFO,
 };
 
 // GitHub configuration

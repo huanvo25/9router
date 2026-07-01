@@ -56,6 +56,8 @@ export default function ProviderDetailPage() {
   const [modelTestResults, setModelTestResults] = useState({});
   const [modelsTestError, setModelsTestError] = useState("");
   const [testingModelIds, setTestingModelIds] = useState(() => new Set());
+  const [testingAllModels, setTestingAllModels] = useState(false);
+  const [modelTestSummary, setModelTestSummary] = useState(null);
   const [showAddCustomModel, setShowAddCustomModel] = useState(false);
   const [selectedConnectionIds, setSelectedConnectionIds] = useState([]);
   const [bulkProxyPoolId, setBulkProxyPoolId] = useState("__none__");
@@ -1020,23 +1022,214 @@ export default function ProviderDetailPage() {
     </Modal>
   );
 
+  const normalizeDisplayModel = (model) => {
+    const rawId = model?.id || model?.name || model?.model;
+    const id = typeof rawId === "string" ? rawId.trim() : "";
+    if (!id) return null;
+    return {
+      ...model,
+      id,
+      name: model?.name || model?.displayName || model?.display_name || id,
+      kind: getModelKind(model) || "llm",
+    };
+  };
+
+  const byModelId = (a, b) => String(a.id).localeCompare(String(b.id), undefined, { numeric: true, sensitivity: "base" });
+
+  const getCompatibleModelRows = () => {
+    const allModels = getProviderCustomModelRows({
+      customModels,
+      modelAliases,
+      providerAlias: providerStorageAlias,
+      type: "llm",
+    });
+    const existingIds = new Set(allModels.map((model) => model.id));
+    for (const model of syncedModels || []) {
+      const row = normalizeDisplayModel(model);
+      if (!row || existingIds.has(row.id)) continue;
+      allModels.push({
+        id: row.id,
+        name: row.name,
+        fullModel: `${providerStorageAlias}/${row.id}`,
+        alias: null,
+        source: "synced",
+        type: "llm",
+        kind: "llm",
+      });
+      existingIds.add(row.id);
+    }
+    return allModels.sort(byModelId);
+  };
+
+  const getStandardModelBuckets = () => {
+    const syncedProviderModels = (syncedModels || [])
+      .map(normalizeDisplayModel)
+      .filter(Boolean);
+    const baseModels = syncedProviderModels.length > 0
+      ? syncedProviderModels
+      : [
+          ...models,
+          ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
+        ];
+    const seenModelIds = new Set();
+    const allModels = baseModels
+      .map(normalizeDisplayModel)
+      .filter(Boolean)
+      .filter((m) => {
+        if (m.kind && m.kind !== "llm") return false;
+        if (seenModelIds.has(m.id)) return false;
+        seenModelIds.add(m.id);
+        return true;
+      });
+    const customModelRows = getProviderCustomModelRows({
+      customModels,
+      modelAliases,
+      providerAlias: providerStorageAlias,
+      builtInModels: allModels,
+      type: "llm",
+    }).map((model) => ({ ...model, kind: "llm" }));
+
+    const disabledSet = new Set(disabledModelIds);
+    return {
+      displayModels: allModels.filter((m) => !disabledSet.has(m.id)).sort(byModelId),
+      disabledDisplayModels: allModels.filter((m) => disabledSet.has(m.id)).sort(byModelId),
+      customDisplayRows: customModelRows.filter((m) => !disabledSet.has(m.id)).sort(byModelId),
+      disabledCustomRows: customModelRows.filter((m) => disabledSet.has(m.id)).sort(byModelId),
+    };
+  };
+
+  const getProviderTestRows = () => {
+    const disabledSet = new Set(disabledModelIds);
+    const rows = isCompatible
+      ? getCompatibleModelRows()
+      : (() => {
+          const buckets = getStandardModelBuckets();
+          return [...buckets.customDisplayRows, ...buckets.displayModels];
+        })();
+    const seen = new Set();
+    return rows
+      .map((model) => normalizeDisplayModel(model) || { ...model, id: model.id, name: model.name || model.id, kind: "llm" })
+      .filter((model) => {
+        if (!model?.id || disabledSet.has(model.id) || seen.has(model.id)) return false;
+        seen.add(model.id);
+        return true;
+      })
+      .sort(byModelId);
+  };
+
+  const disableProviderModels = async (ids) => {
+    const uniqueIds = [...new Set(ids.filter(Boolean))];
+    if (uniqueIds.length === 0) return;
+    const res = await fetch("/api/models/disabled", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerAlias: providerStorageAlias, ids: uniqueIds }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || "Failed to move models to unavailable");
+    }
+    await fetchDisabledModels();
+  };
+
+  const pingProviderModel = async (modelId, kind = "llm") => {
+    const res = await fetch("/api/models/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: `${providerStorageAlias}/${modelId}`, kind }),
+    });
+    const data = await res.json().catch(() => ({}));
+    return {
+      ok: res.ok && data.ok === true,
+      error: data.error || (res.ok ? "Model not reachable" : "Model test failed"),
+      status: data.status,
+      latencyMs: data.latencyMs,
+    };
+  };
+
   const handleTestModel = async (modelId) => {
     if (testingModelIds.has(modelId)) return;
     setTestingModelIds((prev) => new Set(prev).add(modelId));
     try {
-      const res = await fetch("/api/models/test", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: `${providerStorageAlias}/${modelId}` }),
-      });
-      const data = await res.json();
+      const data = await pingProviderModel(modelId);
       setModelTestResults((prev) => ({ ...prev, [modelId]: data.ok ? "ok" : "error" }));
-      setModelsTestError(data.ok ? "" : (data.error || "Model not reachable"));
+      if (data.ok) {
+        setModelsTestError("");
+        setModelTestSummary(null);
+      } else {
+        await disableProviderModels([modelId]);
+        setModelsTestError(data.error || "Model not reachable");
+        setModelTestSummary({ total: 1, passed: 0, failed: 1 });
+      }
     } catch {
       setModelTestResults((prev) => ({ ...prev, [modelId]: "error" }));
       setModelsTestError("Network error");
     } finally {
       setTestingModelIds((prev) => { const n = new Set(prev); n.delete(modelId); return n; });
+    }
+  };
+
+  const handleTestProviderModels = async () => {
+    if (testingAllModels) return;
+    const rows = getProviderTestRows();
+    if (rows.length === 0) {
+      setModelsTestError("No active models to test.");
+      return;
+    }
+
+    setTestingAllModels(true);
+    setModelsTestError("");
+    setModelTestSummary(null);
+    const failedIds = [];
+    const passedIds = [];
+    let cursor = 0;
+    const concurrency = Math.min(3, rows.length);
+
+    const runNext = async () => {
+      while (cursor < rows.length) {
+        const row = rows[cursor];
+        cursor += 1;
+        setTestingModelIds((prev) => new Set(prev).add(row.id));
+        try {
+          const result = await pingProviderModel(row.id, row.kind || "llm");
+          setModelTestResults((prev) => ({ ...prev, [row.id]: result.ok ? "ok" : "error" }));
+          if (result.ok) {
+            passedIds.push(row.id);
+          } else {
+            failedIds.push(row.id);
+          }
+        } catch {
+          failedIds.push(row.id);
+          setModelTestResults((prev) => ({ ...prev, [row.id]: "error" }));
+        } finally {
+          setTestingModelIds((prev) => {
+            const next = new Set(prev);
+            next.delete(row.id);
+            return next;
+          });
+        }
+      }
+    };
+
+    try {
+      await Promise.all(Array.from({ length: concurrency }, () => runNext()));
+      if (failedIds.length > 0) {
+        await disableProviderModels(failedIds);
+      }
+      setModelTestSummary({
+        total: rows.length,
+        passed: passedIds.length,
+        failed: failedIds.length,
+      });
+      setModelsTestError(
+        failedIds.length > 0
+          ? `${failedIds.length} model${failedIds.length === 1 ? "" : "s"} moved to unavailable.`
+          : ""
+      );
+    } catch (error) {
+      setModelsTestError(error.message || "Model test failed");
+    } finally {
+      setTestingAllModels(false);
     }
   };
 
@@ -1046,11 +1239,12 @@ export default function ProviderDetailPage() {
   // Sync (import) fresh model list from the active provider connection.
   const handleSyncModels = async () => {
     const activeConnection = connections.find((conn) => conn.isActive !== false);
-    if (!activeConnection) return;
+    const syncTarget = activeConnection?.id || (isFreeNoAuth ? providerId : null);
+    if (!syncTarget) return;
     if (syncingModels) return;
     setSyncingModels(true);
     try {
-      const res = await fetch(`/api/providers/${activeConnection.id}/sync-models`, { method: "POST" });
+      const res = await fetch(`/api/providers/${syncTarget}/sync-models`, { method: "POST" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setModelsTestError(data.error || "Failed to sync models");
@@ -1127,28 +1321,18 @@ export default function ProviderDetailPage() {
         />
       );
     }
-    // Combine hardcoded models with Kilo free models (deduplicated)
-    // Exclude non-llm models (embedding, tts, etc.) — they have dedicated pages under media-providers
-    const allModels = [
-      ...models,
-      ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
-    ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; });
-    const byId = (a, b) => String(a.id).localeCompare(String(b.id), undefined, { numeric: true, sensitivity: "base" });
-    const disabledSet = new Set(disabledModelIds);
-    const displayModels = allModels.filter((m) => !disabledSet.has(m.id)).sort(byId);
-    const disabledDisplayModels = allModels.filter((m) => disabledSet.has(m.id)).sort(byId);
-    const customModelRows = getProviderCustomModelRows({
-      customModels,
-      modelAliases,
-      providerAlias: providerStorageAlias,
-      builtInModels: models,
-      type: "llm",
-    }).sort(byId);
+    const {
+      displayModels,
+      disabledDisplayModels,
+      customDisplayRows,
+      disabledCustomRows,
+    } = getStandardModelBuckets();
+    const disabledRows = [...disabledCustomRows, ...disabledDisplayModels].sort(byModelId);
 
     return (
       <div className="flex flex-wrap gap-3">
         {/* Custom models first */}
-        {customModelRows.map((model) => (
+        {customDisplayRows.map((model) => (
           <ModelRow
             key={`${model.source}-${model.fullModel}`}
             model={{ id: model.id, name: model.name }}
@@ -1226,7 +1410,7 @@ export default function ProviderDetailPage() {
         {suggestedModels.length > 0 && (() => {
           const addedFullModels = new Set([
             ...Object.values(modelAliases),
-            ...customModelRows.map((model) => model.fullModel),
+            ...customDisplayRows.map((model) => model.fullModel),
           ]);
           const hardcodedIds = new Set(models.map((m) => m.id));
           const notAdded = suggestedModels.filter(
@@ -1255,19 +1439,19 @@ export default function ProviderDetailPage() {
           );
         })()}
 
-        {/* Disabled models — restorable */}
-        {disabledDisplayModels.length > 0 && (
+        {/* Unavailable models — restorable */}
+        {disabledRows.length > 0 && (
           <div className="w-full mt-2">
-            <p className="text-xs text-text-muted mb-2">Disabled models ({disabledDisplayModels.length}):</p>
+            <p className="text-xs text-text-muted mb-2">Unavailable models ({disabledRows.length}):</p>
             <div className="flex flex-wrap gap-2">
-              {disabledDisplayModels.map((m) => (
+              {disabledRows.map((m) => (
                 <button
-                  key={m.id}
+                  key={`unavailable-${m.source || "model"}-${m.id}`}
                   onClick={() => handleEnableModel(m.id)}
-                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-dashed border-black/10 dark:border-white/10 text-xs text-text-muted hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors"
-                  title="Restore model"
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-dashed border-black/10 bg-black/[0.02] text-xs text-text-muted opacity-60 transition-colors hover:text-primary hover:border-primary/40 hover:bg-primary/5 hover:opacity-100 dark:border-white/10 dark:bg-white/[0.03]"
+                  title="Restore model to the active list"
                 >
-                  <span className="material-symbols-outlined text-[13px]">add</span>
+                  <span className="material-symbols-outlined text-[13px]">add_circle</span>
                   {m.id}
                 </button>
               ))}
@@ -1696,24 +1880,10 @@ export default function ProviderDetailPage() {
             {"Available Models"}
           </h2>
           {(() => {
-            const compatibleAllIds = isCompatible
-              ? (() => {
-                  const rows = getProviderCustomModelRows({ customModels, modelAliases, providerAlias: providerStorageAlias, type: "llm" });
-                  const ids = new Set(rows.map((r) => r.id));
-                  for (const m of syncedModels || []) {
-                    const id = (m?.id || m?.name || m?.model || "").trim();
-                    if (id) ids.add(id);
-                  }
-                  return [...ids];
-                })()
-              : [
-                  ...models,
-                  ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
-                ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; }).map((m) => m.id);
-            const activeIds = compatibleAllIds.filter((id) => !disabledModelIds.includes(id));
-            const canSyncHere = isCompatible
-              ? connections.some((conn) => conn.isActive !== false)
-              : connections.length > 0 || isFreeNoAuth;
+            const activeRows = getProviderTestRows();
+            const activeIds = activeRows.map((model) => model.id);
+            const canSyncHere = connections.some((conn) => conn.isActive !== false) || isFreeNoAuth;
+            const canTestHere = canSyncHere && activeRows.length > 0;
             return (
               <div className="flex flex-wrap gap-2">
                 {disabledModelIds.length > 0 && (
@@ -1726,7 +1896,12 @@ export default function ProviderDetailPage() {
                     Disable All
                   </Button>
                 )}
-                {isCompatible && canSyncHere && (
+                {canTestHere && (
+                  <Button size="sm" variant="secondary" icon="science" onClick={handleTestProviderModels} disabled={testingAllModels}>
+                    {testingAllModels ? "Testing Models..." : `Test Models (${activeRows.length})`}
+                  </Button>
+                )}
+                {canSyncHere && (
                   <Button size="sm" variant="secondary" icon="sync" onClick={handleSyncModels} disabled={syncingModels}>
                     {syncingModels ? "Syncing..." : "Sync Models"}
                   </Button>
@@ -1742,6 +1917,15 @@ export default function ProviderDetailPage() {
         </div>
         {!!modelsTestError && (
           <p className="text-xs text-red-500 mb-3 break-words">{modelsTestError}</p>
+        )}
+        {modelTestSummary && (
+          <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-black/10 bg-black/[0.02] px-3 py-2 text-xs text-text-muted dark:border-white/10 dark:bg-white/[0.03]">
+            <span>Tested: {modelTestSummary.total}</span>
+            <span className="text-emerald-600 dark:text-emerald-400">Usable: {modelTestSummary.passed}</span>
+            <span className={modelTestSummary.failed > 0 ? "text-amber-600 dark:text-amber-400" : ""}>
+              Unavailable: {modelTestSummary.failed}
+            </span>
+          </div>
         )}
         {renderModelsSection()}
       </Card>

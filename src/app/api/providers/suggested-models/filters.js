@@ -2,6 +2,21 @@
 const KNOWN_FREE_OPENCODE_MODELS = ["big-pickle"];
 
 export const FILTERS = {
+  openai: (models) =>
+    models
+      .map((m) => {
+        const id = m?.id || m?.name || m?.model;
+        if (typeof id !== "string" || !id.trim()) return null;
+        const normalizedId = id.trim();
+        return {
+          ...m,
+          id: normalizedId,
+          name: m?.name || m?.displayName || m?.display_name || normalizedId,
+          contextLength: m?.contextLength || m?.context_length,
+        };
+      })
+      .filter(Boolean),
+
   "openrouter-free": (models) =>
     models
       .filter(

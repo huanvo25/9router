@@ -3,7 +3,7 @@ import {
   replaceSyncedAvailableModels,
   updateProviderConnection,
 } from "@/lib/localDb";
-import { fetchModelsForConnection } from "@/app/api/providers/[id]/models/route.js";
+import { createNoAuthModelsConnection, fetchModelsForConnection } from "@/app/api/providers/[id]/models/route.js";
 
 function normalizeSyncedModels(models) {
   const seen = new Set();
@@ -25,7 +25,11 @@ function normalizeSyncedModels(models) {
 }
 
 export async function syncProviderConnectionModels(connectionId) {
-  const connection = await getProviderConnectionById(connectionId);
+  let connection = await getProviderConnectionById(connectionId);
+  const isPersistedConnection = Boolean(connection);
+  if (!connection) {
+    connection = createNoAuthModelsConnection(connectionId);
+  }
   if (!connection) {
     return { ok: false, status: 404, error: "Connection not found" };
   }
@@ -60,14 +64,16 @@ export async function syncProviderConnectionModels(connectionId) {
     syncedAt,
   });
 
-  await updateProviderConnection(connectionId, {
-    providerSpecificData: {
-      ...(connection.providerSpecificData || {}),
-      lastModelSyncAt: syncedAt,
-      lastModelSyncCount: persisted.length,
-      lastModelSyncError: null,
-    },
-  });
+  if (isPersistedConnection) {
+    await updateProviderConnection(connectionId, {
+      providerSpecificData: {
+        ...(connection.providerSpecificData || {}),
+        lastModelSyncAt: syncedAt,
+        lastModelSyncCount: persisted.length,
+        lastModelSyncError: null,
+      },
+    });
+  }
 
   return {
     ok: true,
@@ -78,4 +84,3 @@ export async function syncProviderConnectionModels(connectionId) {
     models: persisted,
   };
 }
-

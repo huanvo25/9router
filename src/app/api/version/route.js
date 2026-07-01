@@ -1,5 +1,6 @@
 import https from "https";
 import pkg from "../../../../package.json" with { type: "json" };
+import { CUSTOM_VERSION, CUSTOM_VERSION_INFO } from "@/shared/constants/customVersion";
 
 const NPM_PACKAGE_NAME = "9router";
 
@@ -41,5 +42,11 @@ export async function GET() {
   const currentVersion = pkg.version;
   const hasUpdate = latestVersion ? compareVersions(latestVersion, currentVersion) > 0 : false;
 
-  return Response.json({ currentVersion, latestVersion, hasUpdate });
+  return Response.json({
+    currentVersion,
+    latestVersion,
+    hasUpdate,
+    customVersion: CUSTOM_VERSION,
+    customVersionInfo: CUSTOM_VERSION_INFO,
+  });
 }

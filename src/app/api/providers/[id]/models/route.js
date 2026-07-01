@@ -9,8 +9,11 @@ import { getModelsByProviderId } from "open-sse/config/providerModels.js";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { resolveKimchiModels } from "open-sse/services/kimchiModels.js";
 import { resolveQoderModels } from "open-sse/services/qoderModels.js";
+import REGISTRY from "open-sse/providers/registry/index.js";
+import { FILTERS } from "../../suggested-models/filters.js";
 
 const GEMINI_CLI_MODELS_URL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
+const REGISTRY_BY_ID = new Map(REGISTRY.map((entry) => [entry.id, entry]));
 
 const parseOpenAIStyleModels = (data) => {
   if (Array.isArray(data)) return data;
@@ -61,6 +64,20 @@ const appendCodexReviewModels = (models) => models.flatMap((model) => {
 
 const parseCodexModels = (data) => appendCodexReviewModels(parseOpenAIStyleModels(data));
 
+const normalizeModelRows = (models) =>
+  (Array.isArray(models) ? models : [])
+    .map((model) => {
+      const id = model?.id || model?.name || model?.model;
+      if (typeof id !== "string" || !id.trim()) return null;
+      const normalizedId = id.trim();
+      return {
+        ...model,
+        id: normalizedId,
+        name: model?.name || model?.displayName || model?.display_name || normalizedId,
+      };
+    })
+    .filter(Boolean);
+
 const getStaticModelFallback = (provider, warning) => ({
   models: getModelsByProviderId(provider)
     .map((model) => {
@@ -103,6 +120,77 @@ const getStaticProviderModels = (providerId) =>
     id: model.id,
     name: model.name || model.id,
   }));
+
+const getRegistryEntry = (providerId) => REGISTRY_BY_ID.get(providerId) || null;
+
+const getRegistryModelsFetcher = (providerId) => {
+  const entry = getRegistryEntry(providerId);
+  return entry?.modelsFetcher || entry?.transport?.modelsFetcher || null;
+};
+
+const isNoAuthRegistryProvider = (providerId) => {
+  const entry = getRegistryEntry(providerId);
+  return entry?.noAuth === true || entry?.transport?.noAuth === true;
+};
+
+function parseModelsFetcherResponse(data, fetcher) {
+  const raw = Array.isArray(data) ? data : (data?.data ?? data?.models ?? data?.results ?? []);
+  const models = Array.isArray(raw) ? raw : [];
+  const filter = FILTERS[fetcher?.type];
+  if (filter) return normalizeModelRows(filter(models));
+  return normalizeModelRows(models);
+}
+
+async function fetchModelsFromRegistryFetcher(connection) {
+  const fetcher = getRegistryModelsFetcher(connection.provider);
+  if (!fetcher?.url) return null;
+
+  const entry = getRegistryEntry(connection.provider);
+  const token = connection.providerSpecificData?.copilotToken || connection.accessToken || connection.apiKey;
+  const headers = { "Content-Type": "application/json", "Accept": "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  if (!token && !isNoAuthRegistryProvider(connection.provider)) {
+    return { error: "No valid token found", status: 401 };
+  }
+
+  const response = await fetch(fetcher.url, {
+    method: fetcher.method || "GET",
+    headers: {
+      ...(entry?.transport?.headers || {}),
+      ...headers,
+      ...(fetcher.headers || {}),
+    },
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.log(`Error fetching models from ${connection.provider}:`, errorText);
+    return { error: `Failed to fetch models: ${response.status}`, status: response.status };
+  }
+
+  const data = await response.json();
+  const models = parseModelsFetcherResponse(data, fetcher);
+
+  return {
+    provider: connection.provider,
+    connectionId: connection.id,
+    models,
+  };
+}
+
+export function createNoAuthModelsConnection(providerId) {
+  if (!isNoAuthRegistryProvider(providerId)) return null;
+  if (!getRegistryModelsFetcher(providerId) && getStaticProviderModels(providerId).length === 0) return null;
+  return {
+    id: providerId,
+    provider: providerId,
+    authType: "noauth",
+    isActive: true,
+    providerSpecificData: {},
+    __noAuthModelSync: true,
+  };
+}
 
 // Generic custom resolver for OAuth providers that need refresh-on-401 + token persist.
 // Receives a `fetchFn(token)` and returns parsed models or throws.
@@ -502,6 +590,15 @@ export async function fetchModelsForConnection(connection) {
 
     const config = PROVIDER_MODELS_CONFIG[connection.provider];
     if (!config) {
+      const registryResult = await fetchModelsFromRegistryFetcher(connection);
+      if (registryResult) return registryResult;
+      const staticModels = getStaticProviderModels(connection.provider);
+      if (staticModels.length > 0) {
+        return getStaticModelFallback(
+          connection.provider,
+          `Provider ${connection.provider} has no live models listing endpoint; using static registry models.`
+        );
+      }
       return {
         error: `Provider ${connection.provider} does not support models listing`,
         status: 400

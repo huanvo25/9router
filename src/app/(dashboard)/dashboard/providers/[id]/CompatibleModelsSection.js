@@ -170,16 +170,16 @@ export default function CompatibleModelsSection({
 
       {disabledDisplayModels.length > 0 && (
         <div className="w-full mt-2">
-          <p className="text-xs text-text-muted mb-2">Disabled models ({disabledDisplayModels.length}):</p>
+          <p className="text-xs text-text-muted mb-2">Unavailable models ({disabledDisplayModels.length}):</p>
           <div className="flex flex-wrap gap-2">
             {disabledDisplayModels.map((model) => (
               <button
                 key={`disabled-${model.source}-${model.id}`}
                 onClick={() => onEnableModel(model.id)}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-dashed border-black/10 dark:border-white/10 text-xs text-text-muted hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors"
-                title="Restore model"
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-dashed border-black/10 bg-black/[0.02] text-xs text-text-muted opacity-60 transition-colors hover:text-primary hover:border-primary/40 hover:bg-primary/5 hover:opacity-100 dark:border-white/10 dark:bg-white/[0.03]"
+                title="Restore model to the active list"
               >
-                <span className="material-symbols-outlined text-[13px]">add</span>
+                <span className="material-symbols-outlined text-[13px]">add_circle</span>
                 {model.id}
               </button>
             ))}
