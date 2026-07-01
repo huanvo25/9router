@@ -270,20 +270,23 @@ export function estimateOutputTokens(contentLength) {
 export function formatUsage(inputTokens, outputTokens, targetFormat) {
   // Claude format uses input_tokens/output_tokens
   if (targetFormat === FORMATS.CLAUDE) {
-    return addBufferToUsage({ 
+    return {
       input_tokens: inputTokens, 
       output_tokens: outputTokens, 
       estimated: true 
-    });
+    };
   }
 
-  // Default: OpenAI format (works for openai, gemini, responses, etc.)
-  return addBufferToUsage({
+  // Default: OpenAI format (works for openai, gemini, responses, etc.).
+  // Estimated usage is used for accounting when upstream omits usage, so do
+  // not add the context-safety buffer here; that would inflate dashboard in/out
+  // numbers (notably OpenAI-compatible Responses gateways such as VietAPI).
+  return {
     prompt_tokens: inputTokens,
     completion_tokens: outputTokens,
     total_tokens: inputTokens + outputTokens,
     estimated: true
-  });
+  };
 }
 
 /**
