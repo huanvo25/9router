@@ -1,3 +1,41 @@
+const KIRO_MITM_DEFAULT_MODELS = [
+  { id: "auto", name: "Auto", alias: "auto" },
+  { id: "claude-sonnet-5", name: "Claude Sonnet 5", alias: "claude-sonnet-5" },
+  { id: "claude-opus-4.8", name: "Claude Opus 4.8", alias: "claude-opus-4.8" },
+  { id: "claude-opus-4.7", name: "Claude Opus 4.7", alias: "claude-opus-4.7" },
+  { id: "claude-opus-4.6", name: "Claude Opus 4.6", alias: "claude-opus-4.6" },
+  { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6", alias: "claude-sonnet-4.6" },
+  { id: "claude-opus-4.5", name: "Claude Opus 4.5", alias: "claude-opus-4.5" },
+  { id: "claude-sonnet-4.5", name: "Claude Sonnet 4.5", alias: "claude-sonnet-4.5" },
+  { id: "claude-sonnet-4", name: "Claude Sonnet 4", alias: "claude-sonnet-4" },
+  { id: "claude-haiku-4.5", name: "Claude Haiku 4.5", alias: "claude-haiku-4.5" },
+  { id: "deepseek-3.2", name: "DeepSeek 3.2", alias: "deepseek-3.2" },
+  { id: "minimax-m2.5", name: "MiniMax M2.5", alias: "minimax-m2.5" },
+  { id: "minimax-m2.1", name: "MiniMax M2.1", alias: "minimax-m2.1" },
+  { id: "glm-5", name: "GLM 5", alias: "glm-5" },
+  { id: "qwen3-coder-next", name: "Qwen3 Coder Next", alias: "qwen3-coder-next" },
+  { id: "simple-task", name: "Qwen3 Coder Next (Legacy)", alias: "simple-task" },
+];
+
+const CLAUDE_CODE_OPUS_SONNET_MODEL_ALIASES = [
+  "claude-sonnet-5",
+  "claude-opus-4-8",
+  "claude-opus-4.8",
+  "claude-opus-4-7",
+  "claude-opus-4.7",
+  "claude-opus-4-6",
+  "claude-opus-4.6",
+  "claude-sonnet-4-6",
+  "claude-sonnet-4.6",
+  "claude-opus-4-5-20251101",
+  "claude-opus-4.5",
+  "claude-sonnet-4-5-20250929",
+  "claude-sonnet-4.5",
+  "claude-opus-4-20250514",
+  "claude-sonnet-4-20250514",
+  "claude-sonnet-4",
+];
+
 // MITM Tools — IDE tools intercepted via MITM proxy
 export const MITM_TOOLS = {
   antigravity: {
@@ -55,14 +93,8 @@ export const MITM_TOOLS = {
     description: "Kiro IDE with MITM",
     configType: "mitm",
     mitmDomain: "q.us-east-1.amazonaws.com",
-    defaultModels: [
-      { id: "claude-sonnet-4.5", name: "Claude Sonnet 4.5", alias: "claude-sonnet-4.5" },
-      { id: "claude-sonnet-4", name: "Claude Sonnet 4", alias: "claude-sonnet-4" },
-      { id: "claude-haiku-4.5", name: "Claude Haiku 4.5", alias: "claude-haiku-4.5" },
-      { id: "deepseek-3.2", name: "DeepSeek 3.2", alias: "deepseek-3.2" },
-      { id: "minimax-m2.1", name: "MiniMax M2.1", alias: "minimax-m2.1" },
-      { id: "simple-task", name: "Qwen3 Coder Next", alias: "simple-task" },
-    ],
+    modelAliases: KIRO_MITM_DEFAULT_MODELS.map((model) => model.alias),
+    defaultModels: KIRO_MITM_DEFAULT_MODELS,
   },
   // cursor: {
   //   id: "cursor",
@@ -96,11 +128,11 @@ export const CLI_TOOLS = {
       sonnetModel: "ANTHROPIC_DEFAULT_SONNET_MODEL",
       haikuModel: "ANTHROPIC_DEFAULT_HAIKU_MODEL",
     },
-    modelAliases: ["default", "sonnet", "opus", "haiku", "opusplan"],
+    modelAliases: ["default", "sonnet", "opus", "haiku", "opusplan", ...CLAUDE_CODE_OPUS_SONNET_MODEL_ALIASES],
     settingsFile: "~/.claude/settings.json",
     defaultModels: [
-      { id: "opus", name: "Claude Opus", alias: "opus", envKey: "ANTHROPIC_DEFAULT_OPUS_MODEL", defaultValue: "cc/claude-opus-4-6" },
-      { id: "sonnet", name: "Claude Sonnet", alias: "sonnet", envKey: "ANTHROPIC_DEFAULT_SONNET_MODEL", defaultValue: "cc/claude-sonnet-4-6" },
+      { id: "opus", name: "Claude Opus", alias: "opus", envKey: "ANTHROPIC_DEFAULT_OPUS_MODEL", defaultValue: "cc/claude-opus-4-8" },
+      { id: "sonnet", name: "Claude Sonnet", alias: "sonnet", envKey: "ANTHROPIC_DEFAULT_SONNET_MODEL", defaultValue: "cc/claude-sonnet-5" },
       { id: "haiku", name: "Claude Haiku", alias: "haiku", envKey: "ANTHROPIC_DEFAULT_HAIKU_MODEL", defaultValue: "cc/claude-haiku-4-5-20251001" },
     ],
   },
@@ -391,4 +423,3 @@ export const getProviderModelsForMapping = (providers) => {
   });
   return result;
 };
-

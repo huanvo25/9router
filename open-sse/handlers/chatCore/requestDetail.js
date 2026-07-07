@@ -23,11 +23,19 @@ export function extractRequestConfig(body, stream) {
 export function extractUsageFromResponse(responseBody) {
   if (!responseBody || typeof responseBody !== "object") return null;
 
+  const positiveToken = (...values) => {
+    for (const value of values) {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric) && numeric > 0) return numeric;
+    }
+    return 0;
+  };
+
   // Claude format
   if (responseBody.usage?.input_tokens !== undefined) {
     return {
-      prompt_tokens: responseBody.usage.input_tokens || 0,
-      completion_tokens: responseBody.usage.output_tokens || 0,
+      prompt_tokens: responseBody.usage.input_tokens || responseBody.usage.prompt_tokens || 0,
+      completion_tokens: positiveToken(responseBody.usage.output_tokens, responseBody.usage.completion_tokens),
       cache_read_input_tokens: responseBody.usage.cache_read_input_tokens,
       cache_creation_input_tokens: responseBody.usage.cache_creation_input_tokens
     };
@@ -77,8 +85,8 @@ export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, 
     tokens = { prompt_tokens: 0, completion_tokens: 0 };
   }
 
-  const inTokens = tokens.input_tokens ?? tokens.prompt_tokens ?? 0;
-  const outTokens = tokens.output_tokens ?? tokens.completion_tokens ?? 0;
+  const inTokens = Math.max(Number(tokens.input_tokens) || 0, Number(tokens.prompt_tokens) || 0);
+  const outTokens = Math.max(Number(tokens.output_tokens) || 0, Number(tokens.completion_tokens) || 0);
 
   const time = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const accountSuffix = connectionId ? ` | account=${connectionId.slice(0, 8)}...` : "";

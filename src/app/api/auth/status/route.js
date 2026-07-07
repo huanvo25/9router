@@ -2,13 +2,19 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { getSettings } from "@/lib/localDb";
 import { isOidcConfigured } from "@/lib/auth/oidc";
-import { getDashboardAuthSession } from "@/lib/auth/dashboardSession";
+import {
+  getDashboardAuthSession,
+  renewLegacyDashboardAuthCookie,
+} from "@/lib/auth/dashboardSession";
 
-export async function GET() {
+export async function GET(request) {
   try {
     const settings = await getSettings();
     const cookieStore = await cookies();
-    const session = await getDashboardAuthSession(cookieStore.get("auth_token")?.value);
+    const token = cookieStore.get("auth_token")?.value;
+    const deviceId = cookieStore.get("auth_device_id")?.value;
+    const session = await getDashboardAuthSession(token, deviceId);
+    await renewLegacyDashboardAuthCookie(cookieStore, request, session);
     const requireLogin = settings.requireLogin !== false;
     const authMode = settings.authMode || "password";
     const oidcName = String(session?.oidcName || "").trim();

@@ -1,5 +1,25 @@
 import { CLAUDE_CLI_SPOOF_HEADERS } from "../shared.js";
 
+const CLAUDE_CODE_MODELS = [
+  { id: "claude-sonnet-5", name: "Claude Sonnet 5" },
+  { id: "claude-opus-4-8", name: "Claude Opus 4.8" },
+  { id: "claude-opus-4.8", name: "Claude Opus 4.8", upstreamModelId: "claude-opus-4-8" },
+  { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
+  { id: "claude-opus-4.7", name: "Claude Opus 4.7", upstreamModelId: "claude-opus-4-7" },
+  { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
+  { id: "claude-opus-4.6", name: "Claude Opus 4.6", upstreamModelId: "claude-opus-4-6" },
+  { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+  { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6", upstreamModelId: "claude-sonnet-4-6" },
+  { id: "claude-opus-4-5-20251101", name: "Claude Opus 4.5" },
+  { id: "claude-opus-4.5", name: "Claude Opus 4.5", upstreamModelId: "claude-opus-4-5-20251101" },
+  { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5" },
+  { id: "claude-sonnet-4.5", name: "Claude Sonnet 4.5", upstreamModelId: "claude-sonnet-4-5-20250929" },
+  { id: "claude-opus-4-20250514", name: "Claude Opus 4" },
+  { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4" },
+  { id: "claude-sonnet-4", name: "Claude Sonnet 4", upstreamModelId: "claude-sonnet-4-20250514" },
+  { id: "claude-haiku-4-5-20251001", name: "Claude 4.5 Haiku" },
+];
+
 export default {
   id: "claude",
   priority: 10,
@@ -59,15 +79,7 @@ export default {
       settingsUrl: "https://api.anthropic.com/v1/settings",
     },
   },
-  models: [
-    { id: "claude-opus-4-8", name: "Claude Opus 4.8" },
-    { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
-    { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
-    { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-    { id: "claude-opus-4-5-20251101", name: "Claude 4.5 Opus" },
-    { id: "claude-sonnet-4-5-20250929", name: "Claude 4.5 Sonnet" },
-    { id: "claude-haiku-4-5-20251001", name: "Claude 4.5 Haiku" },
-  ],
+  models: CLAUDE_CODE_MODELS,
   oauth: {
     clientId: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
     authorizeUrl: "https://claude.ai/oauth/authorize",

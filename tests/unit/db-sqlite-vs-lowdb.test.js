@@ -98,7 +98,7 @@ describe("DB SQLite layer — public API parity", () => {
     expect(back.accessToken).toBe("tok");
     expect(back.refreshToken).toBe("rtok");
     expect(back.expiresAt).toBe(12345);
-    expect(back.providerSpecificData).toEqual({ foo: "bar" });
+    expect(back.providerSpecificData).toEqual({ foo: "bar", autoSync: true });
   });
 
   it("providerNodes: CRUD", async () => {
@@ -199,6 +199,43 @@ describe("DB SQLite layer — public API parity", () => {
     expect(stats.byProvider.openai).toBeDefined();
     expect(stats.byProvider.openai.requests).toBeGreaterThanOrEqual(2);
     expect(stats.byProvider.openai.promptTokens).toBeGreaterThanOrEqual(300);
+  });
+
+  it("usage: error counts include failed status and zero input/output tokens", async () => {
+    const dayMs = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    await sqliteDb.saveRequestUsage({
+      timestamp: new Date(now - 1000).toISOString(),
+      provider: "err-prov", model: "zero-input", connectionId: "c1",
+      tokens: { prompt_tokens: 0, completion_tokens: 25 },
+      endpoint: "/v1/chat/completions", status: "ok",
+    });
+    await sqliteDb.saveRequestUsage({
+      timestamp: new Date(now - 2 * dayMs).toISOString(),
+      provider: "err-prov", model: "bad-status", connectionId: "c1",
+      tokens: { prompt_tokens: 20, completion_tokens: 10 },
+      endpoint: "/v1/chat/completions", status: "error",
+    });
+    await sqliteDb.saveRequestUsage({
+      timestamp: new Date(now - 90 * dayMs).toISOString(),
+      provider: "old-prov", model: "zero-output", connectionId: "c1",
+      tokens: { prompt_tokens: 25, completion_tokens: 0 },
+      endpoint: "/v1/chat/completions", status: "ok",
+    });
+
+    const stats = await sqliteDb.getUsageStats("24h");
+    const errorCounts = Object.fromEntries(stats.errorCounts.map((item) => [item.key, item]));
+
+    expect(errorCounts["24h"].count).toBeGreaterThanOrEqual(1);
+    expect(errorCounts["7d"].count).toBeGreaterThanOrEqual(2);
+    expect(errorCounts["1y"].count).toBeGreaterThanOrEqual(3);
+    expect(errorCounts["7d"].statusErrorCount).toBeGreaterThanOrEqual(1);
+    expect(errorCounts["1y"].zeroTokenCount).toBeGreaterThanOrEqual(2);
+
+    const recentZeroInput = stats.recentRequests.find((request) => request.model === "zero-input");
+    expect(recentZeroInput).toMatchObject({ isError: true });
+    expect(recentZeroInput.errorReason).toContain("input=0");
   });
 
   it("usage: pending tracking in-memory", () => {

@@ -92,6 +92,13 @@ function buildKiroFingerprintHeaders(credentials) {
   };
 }
 
+function buildKiroAuthModeHeaders(credentials) {
+  const authMethod = credentials?.providerSpecificData?.authMethod;
+  if (authMethod === "api_key") return { tokentype: "API_KEY" };
+  if (authMethod === "external_idp") return { TokenType: "EXTERNAL_IDP" };
+  return {};
+}
+
 /**
  * Build the synthetic 9router variant set for a single upstream Kiro model.
  *
@@ -166,6 +173,7 @@ async function fetchKiroCatalogRaw(credentials, signal) {
 
   const headers = {
     ...buildKiroFingerprintHeaders(credentials),
+    ...buildKiroAuthModeHeaders(credentials),
     "Authorization": `Bearer ${credentials?.accessToken || ""}`
   };
 

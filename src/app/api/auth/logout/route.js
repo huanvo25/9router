@@ -4,7 +4,7 @@ import { clearDashboardAuthCookie } from "@/lib/auth/dashboardSession";
 
 export async function POST() {
   const cookieStore = await cookies();
-  clearDashboardAuthCookie(cookieStore);
+  await clearDashboardAuthCookie(cookieStore);
   cookieStore.delete("oidc_state");
   cookieStore.delete("oidc_nonce");
   cookieStore.delete("oidc_code_verifier");

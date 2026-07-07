@@ -65,7 +65,7 @@ export default function Pagination({
               )}
               style={{ colorScheme: 'auto' }}
             >
-              {[10, 20, 50].map((size) => (
+              {[10, 20, 50, 100].map((size) => (
                 <option key={size} value={size}>
                   {size}
                 </option>

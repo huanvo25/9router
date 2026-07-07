@@ -82,6 +82,17 @@ describe("BaseExecutor.execute — network error retry/fallback", () => {
     expect(thrown?.message).toBe("boom");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("does not retry the internal fetch connect timeout", async () => {
+    const ex = makeExec({ baseUrl: "https://x/api", timeoutMs: 1, retry: { 502: { attempts: 3, delayMs: 0 } } });
+    fetchMock.mockImplementationOnce((url, options) => new Promise((resolve, reject) => {
+      options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+    }));
+
+    await expect(ex.execute({ model: "m", body: {}, stream: false, credentials: creds }))
+      .rejects.toThrow("fetch connect timeout");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("BaseExecutor.execute — computeRetryDelay hook veto", () => {

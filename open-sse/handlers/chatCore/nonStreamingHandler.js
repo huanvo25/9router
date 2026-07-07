@@ -2,7 +2,7 @@ import { FORMATS } from "../../translator/formats.js";
 import { needsTranslation } from "../../translator/index.js";
 import { fromOpenAIFinish } from "../../translator/concerns/finishReason.js";
 import { ollamaBodyToOpenAI } from "../../translator/response/ollama-to-openai.js";
-import { addBufferToUsage, estimateUsage, filterUsageForFormat, hasValidUsage } from "../../utils/usageTracking.js";
+import { addBufferToUsage, ensureObservedOutputUsage, estimateUsage, filterUsageForFormat, hasValidUsage } from "../../utils/usageTracking.js";
 import { createErrorResult } from "../../utils/error.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { parseSSEToOpenAIResponse } from "./sseToJsonHandler.js";
@@ -13,6 +13,7 @@ import { decloakToolNames } from "../../utils/claudeCloaking.js";
 function estimateContentLengthFromResponse(body) {
   if (!body || typeof body !== "object") return 0;
   try {
+    if (typeof body.output_text === "string") return body.output_text.length;
     const content = body.choices?.[0]?.message?.content;
     if (typeof content === "string") return content.length;
     if (Array.isArray(content)) {
@@ -26,6 +27,16 @@ function estimateContentLengthFromResponse(body) {
       return body.content.reduce((total, part) => {
         if (typeof part?.text === "string") return total + part.text.length;
         return total;
+      }, 0);
+    }
+    if (Array.isArray(body.output)) {
+      return body.output.reduce((total, item) => {
+        if (!Array.isArray(item?.content)) return total;
+        return total + item.content.reduce((sum, part) => {
+          if (typeof part?.text === "string") return sum + part.text.length;
+          if (typeof part?.output_text === "string") return sum + part.output_text.length;
+          return sum;
+        }, 0);
       }, 0);
     }
     const response = body.response || body;
@@ -286,9 +297,12 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   // Decloak tool_use names once on raw Claude body, before any translation (INPUT side)
   responseBody = decloakToolNames(responseBody, toolNameMap);
 
+  const rawContentLength = estimateContentLengthFromResponse(responseBody);
   let usage = extractUsageFromResponse(responseBody);
   if (!hasValidUsage(usage)) {
-    usage = estimateUsage(finalBody || translatedBody || body, estimateContentLengthFromResponse(responseBody));
+    usage = estimateUsage(finalBody || translatedBody || body, rawContentLength);
+  } else {
+    usage = ensureObservedOutputUsage(usage, finalBody || translatedBody || body, rawContentLength);
   }
   appendLog({ tokens: usage, status: "200 OK" });
   saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint });
@@ -326,7 +340,14 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   }
 
   if (translatedResponse?.usage) {
-    translatedResponse.usage = filterUsageForFormat(addBufferToUsage(translatedResponse.usage), sourceFormat);
+    const translatedContentLength = estimateContentLengthFromResponse(translatedResponse);
+    const repairedUsage = ensureObservedOutputUsage(
+      translatedResponse.usage,
+      finalBody || translatedBody || body,
+      translatedContentLength,
+      sourceFormat
+    );
+    translatedResponse.usage = filterUsageForFormat(addBufferToUsage(repairedUsage), sourceFormat);
   }
 
   // Strip reasoning_content only when content is non-empty.

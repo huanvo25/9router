@@ -261,6 +261,96 @@ export function estimateOutputTokens(contentLength) {
   return Math.max(1, Math.floor(contentLength / 4));
 }
 
+function numericToken(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function getOutputTokenCount(usage) {
+  return Math.max(
+    numericToken(usage?.completion_tokens),
+    numericToken(usage?.output_tokens),
+    numericToken(usage?.candidatesTokenCount),
+    numericToken(usage?.completionTokens),
+    numericToken(usage?.outputTokens)
+  );
+}
+
+function getInputTokenCount(usage) {
+  return Math.max(
+    numericToken(usage?.prompt_tokens),
+    numericToken(usage?.input_tokens),
+    numericToken(usage?.promptTokenCount),
+    numericToken(usage?.promptTokens),
+    numericToken(usage?.inputTokens)
+  );
+}
+
+/**
+ * Some OpenAI-compatible Responses gateways return text while reporting
+ * output_tokens: 0. Keep upstream input accounting, but estimate the missing
+ * output side from observed text so dashboards do not show successful text
+ * responses as out=0.
+ */
+export function ensureObservedOutputUsage(usage, body, contentLength, targetFormat = FORMATS.OPENAI) {
+  const observedOutputTokens = getOutputTokenCount(usage);
+  if (observedOutputTokens > 0 && usage && typeof usage === "object") {
+    let patched = usage;
+    const ensurePatch = () => {
+      if (patched === usage) patched = { ...usage };
+    };
+    if (("output_tokens" in usage || targetFormat === FORMATS.CLAUDE || targetFormat === FORMATS.OPENAI_RESPONSES) && numericToken(usage.output_tokens) <= 0) {
+      ensurePatch();
+      patched.output_tokens = observedOutputTokens;
+    }
+    if (("completion_tokens" in usage || (!("input_tokens" in usage) && targetFormat !== FORMATS.CLAUDE && targetFormat !== FORMATS.OPENAI_RESPONSES)) && numericToken(usage.completion_tokens) <= 0) {
+      ensurePatch();
+      patched.completion_tokens = observedOutputTokens;
+    }
+    if (patched !== usage) {
+      const inputTokens = getInputTokenCount(patched) || estimateInputTokens(body);
+      const currentTotal = numericToken(patched.total_tokens ?? patched.totalTokenCount);
+      if ("totalTokenCount" in patched) {
+        if (currentTotal <= inputTokens) patched.totalTokenCount = inputTokens + observedOutputTokens;
+      } else if ("total_tokens" in patched || "prompt_tokens" in patched || "input_tokens" in patched) {
+        if (currentTotal <= inputTokens) patched.total_tokens = inputTokens + observedOutputTokens;
+      }
+    }
+    return patched;
+  }
+
+  const estimatedOutputTokens = estimateOutputTokens(contentLength);
+  if (estimatedOutputTokens <= 0) return usage;
+
+  if (!usage || typeof usage !== "object") {
+    return estimateUsage(body, contentLength, targetFormat);
+  }
+
+  const patched = { ...usage, estimated: true };
+  const inputTokens = getInputTokenCount(patched) || estimateInputTokens(body);
+
+  if ("input_tokens" in patched || targetFormat === FORMATS.CLAUDE || targetFormat === FORMATS.OPENAI_RESPONSES) {
+    patched.input_tokens = inputTokens;
+    patched.output_tokens = estimatedOutputTokens;
+  }
+
+  if ("prompt_tokens" in patched || !("input_tokens" in patched)) {
+    patched.prompt_tokens = inputTokens;
+    patched.completion_tokens = estimatedOutputTokens;
+  }
+
+  if ("candidatesTokenCount" in patched) patched.candidatesTokenCount = estimatedOutputTokens;
+
+  const currentTotal = numericToken(patched.total_tokens ?? patched.totalTokenCount);
+  if ("totalTokenCount" in patched) {
+    if (currentTotal <= inputTokens) patched.totalTokenCount = inputTokens + estimatedOutputTokens;
+  } else if ("total_tokens" in patched || "prompt_tokens" in patched || "input_tokens" in patched) {
+    if (currentTotal <= inputTokens) patched.total_tokens = inputTokens + estimatedOutputTokens;
+  }
+
+  return patched;
+}
+
 /**
  * Format usage object based on target format
  * @param {number} inputTokens - Input/prompt tokens

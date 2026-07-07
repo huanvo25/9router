@@ -138,6 +138,48 @@ describe("Kiro external_idp (CLIProxyAPI) import and refresh", () => {
     expect(calls[0].init.headers.tokentype).toBeUndefined();
   });
 
+  it("sends TokenType for external_idp live Kiro model catalog fetches", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        models: [
+          {
+            modelId: "claude-sonnet-5",
+            modelName: "Claude Sonnet 5",
+            rateMultiplier: 1.3,
+            tokenLimits: { maxInputTokens: 1000000, maxOutputTokens: 64000 },
+          },
+        ],
+      }),
+    });
+    const { resolveKiroModels } = await import("../../open-sse/services/kiroModels.js");
+    global.fetch = fetchMock;
+
+    const result = await resolveKiroModels({
+      accessToken: "microsoft-access-token",
+      refreshToken: "1.AcY-refresh-token",
+      providerSpecificData: {
+        authMethod: "external_idp",
+        profileArn: "arn:aws:codewhisperer:us-east-1:123456789012:profile/ABC",
+        clientId: TEST_CLIENT_ID,
+        tokenEndpoint: "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token",
+        scope: TEST_SCOPE,
+      },
+    }, { forceRefresh: true });
+
+    expect(result.models.map((model) => model.id)).toEqual([
+      "claude-sonnet-5",
+      "claude-sonnet-5-thinking",
+      "claude-sonnet-5-agentic",
+      "claude-sonnet-5-thinking-agentic",
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers.Authorization).toBe("Bearer microsoft-access-token");
+    expect(init.headers.TokenType).toBe("EXTERNAL_IDP");
+    expect(init.headers.tokentype).toBeUndefined();
+  });
+
   it("imports CLIProxyAPI external_idp JSON as a Kiro OAuth connection", async () => {
     const createdConnections = [];
     vi.doMock("next/server", () => ({

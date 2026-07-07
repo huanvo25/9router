@@ -10,7 +10,8 @@ async function canAccessTestRoute() {
 
   const cookieStore = await cookies();
   const token = cookieStore.get("auth_token")?.value;
-  return await verifyDashboardAuthToken(token);
+  const deviceId = cookieStore.get("auth_device_id")?.value;
+  return await verifyDashboardAuthToken(token, deviceId);
 }
 
 export async function POST(request) {

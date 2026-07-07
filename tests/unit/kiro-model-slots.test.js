@@ -9,6 +9,7 @@ import { MITM_TOOLS } from "../../src/shared/constants/cliTools.js";
 // "monthly usage limit" once the AWS quota is gone).
 describe("Kiro MITM model slots", () => {
   const kiro = MITM_TOOLS.kiro;
+  const modelIds = () => kiro.defaultModels.map((m) => m.id);
 
   it("exposes the kiro mitm tool", () => {
     expect(kiro).toBeTruthy();
@@ -20,6 +21,26 @@ describe("Kiro MITM model slots", () => {
     const auto = kiro.defaultModels.find((m) => m.id === "auto");
     expect(auto).toBeTruthy();
     expect(auto.alias).toBe("auto");
+  });
+
+  it("offers all current upstream Kiro model ids", () => {
+    expect(modelIds()).toEqual(expect.arrayContaining([
+      "auto",
+      "claude-sonnet-5",
+      "claude-opus-4.8",
+      "claude-opus-4.7",
+      "claude-opus-4.6",
+      "claude-sonnet-4.6",
+      "claude-opus-4.5",
+      "claude-sonnet-4.5",
+      "claude-sonnet-4",
+      "claude-haiku-4.5",
+      "deepseek-3.2",
+      "minimax-m2.5",
+      "minimax-m2.1",
+      "glm-5",
+      "qwen3-coder-next",
+    ]));
   });
 
   it("offers a mappable slot for the background sub-task model id 'simple-task'", () => {

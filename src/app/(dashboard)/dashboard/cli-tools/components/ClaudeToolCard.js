@@ -14,6 +14,7 @@ export default function ClaudeToolCard({
   isExpanded,
   onToggle,
   activeProviders,
+  availableModels = [],
   modelMappings,
   onModelMappingChange,
   baseUrl,
@@ -40,6 +41,97 @@ export default function ClaudeToolCard({
   const [customBaseUrl, setCustomBaseUrl] = useState("");
   const [ccFilterNaming, setCcFilterNaming] = useState(false);
   const hasInitializedModels = useRef(false);
+  const exposeInClaudeCodeSelector = (value) => {
+    const id = String(value || "").trim();
+    if (/^cc\//.test(id)) return false;
+    return /^kr\//.test(id) || /(claude|opus|sonnet|fable)/i.test(id);
+  };
+  const buildClaudeCodeSelectorModels = () => {
+    const result = [];
+    const seen = new Set();
+    const add = (value) => {
+      const id = String(value || "").trim();
+      if (!id || seen.has(id) || !exposeInClaudeCodeSelector(id)) return;
+      seen.add(id);
+      result.push(id);
+    };
+
+    availableModels.forEach((model) => add(model.value || model.label || model));
+    Object.values(modelMappings || {}).forEach(add);
+    (claudeStatus?.settings?.availableModels || []).forEach(add);
+    tool.defaultModels.forEach((model) => add(model.defaultValue));
+    return result;
+  };
+  const setModelMetadata = (env, prefix, model) => {
+    if (!model) return;
+    env[`${prefix}_NAME`] = model;
+    env[`${prefix}_DESCRIPTION`] = `${model} via 9router`;
+  };
+  const pickSelectorModel = (models, ...patterns) => {
+    return models.find((id) => patterns.every((pattern) => pattern.test(id)));
+  };
+  const getSelectorDefault = (models, currentValue, ...fallbackPatterns) => {
+    if (models.includes(currentValue)) return currentValue;
+    return pickSelectorModel(models, ...fallbackPatterns) || models[0];
+  };
+  const buildSettingsPayload = (baseEnv) => {
+    const env = { ...baseEnv };
+    if (env.ANTHROPIC_DEFAULT_OPUS_MODEL && !env.ANTHROPIC_MODEL) {
+      env.ANTHROPIC_MODEL = env.ANTHROPIC_DEFAULT_OPUS_MODEL;
+    }
+    const selectorModels = buildClaudeCodeSelectorModels();
+    const payload = { env };
+    if (selectorModels.length > 0) {
+      const options = selectorModels.map((id) => ({
+        name: id,
+        value: id,
+        description: `${id} via 9router`,
+      }));
+      const modelOverrides = Object.fromEntries(selectorModels.map((id) => [id, id]));
+      env.ANTHROPIC_DEFAULT_OPUS_MODEL = getSelectorDefault(
+        selectorModels,
+        env.ANTHROPIC_DEFAULT_OPUS_MODEL,
+        /opus/i,
+        /(4\.8|4-8)/i,
+        /thinking/i
+      );
+      env.ANTHROPIC_DEFAULT_SONNET_MODEL = getSelectorDefault(
+        selectorModels,
+        env.ANTHROPIC_DEFAULT_SONNET_MODEL,
+        /sonnet/i
+      );
+      env.ANTHROPIC_DEFAULT_HAIKU_MODEL = getSelectorDefault(
+        selectorModels,
+        env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
+        /haiku/i
+      );
+      const fableModel = pickSelectorModel(selectorModels, /fable/i);
+      if (fableModel) env.ANTHROPIC_DEFAULT_FABLE_MODEL = fableModel;
+      const defaultModel = getSelectorDefault(
+        selectorModels,
+        env.ANTHROPIC_MODEL || env.ANTHROPIC_DEFAULT_OPUS_MODEL,
+        /opus/i,
+        /(4\.8|4-8)/i,
+        /thinking/i
+      );
+
+      env.ANTHROPIC_CUSTOM_MODEL_OPTION = defaultModel;
+      env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME = defaultModel;
+      env.ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION = `${defaultModel} via 9router`;
+      env.ANTHROPIC_CUSTOM_MODEL_OPTIONS = JSON.stringify(options);
+      env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = "1";
+      setModelMetadata(env, "ANTHROPIC_DEFAULT_OPUS_MODEL", env.ANTHROPIC_DEFAULT_OPUS_MODEL);
+      setModelMetadata(env, "ANTHROPIC_DEFAULT_SONNET_MODEL", env.ANTHROPIC_DEFAULT_SONNET_MODEL);
+      setModelMetadata(env, "ANTHROPIC_DEFAULT_HAIKU_MODEL", env.ANTHROPIC_DEFAULT_HAIKU_MODEL);
+      setModelMetadata(env, "ANTHROPIC_DEFAULT_FABLE_MODEL", env.ANTHROPIC_DEFAULT_FABLE_MODEL);
+
+      payload.availableModels = selectorModels;
+      payload.enforceAvailableModels = true;
+      payload.modelOverrides = modelOverrides;
+      payload.model = defaultModel;
+    }
+    return payload;
+  };
 
   const getConfigStatus = () => {
     if (!claudeStatus?.installed) return null;
@@ -132,12 +224,12 @@ export default function ClaudeToolCard({
 
   const getEffectiveBaseUrl = () => {
     const url = customBaseUrl || baseUrl;
-    return url.endsWith("/v1") ? url : `${url}/v1`;
+    return (url || "").replace(/\/+$/, "").replace(/\/v1$/, "");
   };
 
   const getDisplayUrl = () => {
     const url = customBaseUrl || baseUrl;
-    return url.endsWith("/v1") ? url : `${url}/v1`;
+    return (url || "").replace(/\/+$/, "").replace(/\/v1$/, "");
   };
 
   const handleApplySettings = async () => {
@@ -159,15 +251,16 @@ export default function ClaudeToolCard({
         const targetModel = modelMappings[model.alias];
         if (targetModel && model.envKey) env[model.envKey] = targetModel;
       });
+      const payload = buildSettingsPayload(env);
       const res = await fetch("/api/cli-tools/claude-settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ env }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (res.ok) {
         setMessage({ type: "success", text: "Settings applied successfully!" });
-        setClaudeStatus(prev => ({ ...prev, hasBackup: true, settings: { ...prev?.settings, env } }));
+        setClaudeStatus(prev => ({ ...prev, hasBackup: true, settings: { ...prev?.settings, ...payload } }));
       } else {
         setMessage({ type: "error", text: data.error || "Failed to apply settings" });
       }
@@ -217,11 +310,12 @@ export default function ClaudeToolCard({
       const targetModel = modelMappings[model.alias];
       if (targetModel && model.envKey) env[model.envKey] = targetModel;
     });
+    const payload = buildSettingsPayload(env);
 
     return [
       {
         filename: "~/.claude/settings.json",
-        content: JSON.stringify({ hasCompletedOnboarding: true, env }, null, 2),
+        content: JSON.stringify({ hasCompletedOnboarding: true, ...payload }, null, 2),
       },
     ];
   };
@@ -306,6 +400,7 @@ export default function ClaudeToolCard({
                     tunnelPublicUrl={tunnelPublicUrl}
                     tailscaleEnabled={tailscaleEnabled}
                     tailscaleUrl={tailscaleUrl}
+                    withV1={false}
                   />
                 </div>
 

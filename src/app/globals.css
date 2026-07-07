@@ -255,6 +255,45 @@ input, textarea {
   background: rgba(229, 106, 74, 0.55);
 }
 
+/* Provider color chips */
+.provider-badge {
+  color: hsl(var(--provider-hue, 205) 72% 28%);
+  background:
+    linear-gradient(
+      180deg,
+      hsl(var(--provider-hue, 205) 92% 92% / 0.94),
+      hsl(var(--provider-hue, 205) 86% 84% / 0.74)
+    );
+  border-color: hsl(var(--provider-hue, 205) 76% 40% / 0.42);
+  box-shadow: inset 0 1px 0 hsl(var(--provider-hue, 205) 96% 96% / 0.5);
+}
+
+.dark .provider-badge {
+  color: hsl(var(--provider-hue, 205) 98% 88%);
+  background:
+    linear-gradient(
+      180deg,
+      hsl(var(--provider-hue, 205) 88% 48% / 0.38),
+      hsl(var(--provider-hue, 205) 82% 34% / 0.28)
+    );
+  border-color: hsl(var(--provider-hue, 205) 92% 72% / 0.58);
+  box-shadow:
+    inset 0 1px 0 hsl(var(--provider-hue, 205) 98% 90% / 0.16),
+    0 0 0 1px hsl(var(--provider-hue, 205) 88% 44% / 0.1);
+}
+
+.provider-dot {
+  background: hsl(var(--provider-hue, 205) 78% 42%);
+  box-shadow: 0 0 0 2px hsl(var(--provider-hue, 205) 78% 42% / 0.16);
+}
+
+.dark .provider-dot {
+  background: hsl(var(--provider-hue, 205) 96% 70%);
+  box-shadow:
+    0 0 0 2px hsl(var(--provider-hue, 205) 96% 70% / 0.18),
+    0 0 8px hsl(var(--provider-hue, 205) 96% 70% / 0.24);
+}
+
 /* Reusable elevated card */
 .card-soft {
   background-color: var(--color-surface);

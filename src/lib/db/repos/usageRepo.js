@@ -10,9 +10,12 @@ function maskApiKey(key) {
 }
 
 const PENDING_TIMEOUT_MS = 60 * 1000;
-const RING_CAP = 50;
+const RECENT_REQUEST_LIMIT = 100;
+const RECENT_HISTORY_SCAN_LIMIT = 300;
+const RING_CAP = 120;
 const CONN_CACHE_TTL_MS = 30 * 1000;
-const PERIOD_MS = { "24h": 86400000, "7d": 604800000, "30d": 2592000000, "60d": 5184000000 };
+const DAY_MS = 86400000;
+const PERIOD_MS = { "24h": DAY_MS, "7d": 7 * DAY_MS, "30d": 30 * DAY_MS, "60d": 60 * DAY_MS, "1y": 365 * DAY_MS };
 
 // In-memory state shared across Next.js modules
 if (!global._pendingRequests) global._pendingRequests = { byModel: {}, byAccount: {} };
@@ -101,8 +104,91 @@ function pushToRing(entry) {
   }
 }
 
+function getPromptTokens(entry = {}) {
+  const tokens = entry.tokens || {};
+  return Number(entry.promptTokens ?? tokens.prompt_tokens ?? tokens.input_tokens ?? 0) || 0;
+}
+
+function getCompletionTokens(entry = {}) {
+  const tokens = entry.tokens || {};
+  return Number(entry.completionTokens ?? tokens.completion_tokens ?? tokens.output_tokens ?? 0) || 0;
+}
+
+function isOkStatus(status) {
+  const value = String(status || "").trim().toLowerCase();
+  return !value || value === "ok" || value === "success";
+}
+
+function getUsageError(entry = {}) {
+  const promptTokens = getPromptTokens(entry);
+  const completionTokens = getCompletionTokens(entry);
+  const statusError = !isOkStatus(entry.status);
+  const inputZero = promptTokens <= 0;
+  const outputZero = completionTokens <= 0;
+  const reasons = [];
+
+  if (statusError) reasons.push(`status:${entry.status || "unknown"}`);
+  if (inputZero) reasons.push("input=0");
+  if (outputZero) reasons.push("output=0");
+
+  return {
+    isError: statusError || inputZero || outputZero,
+    statusError,
+    zeroTokenError: inputZero || outputZero,
+    promptTokens,
+    completionTokens,
+    reason: reasons.join(", "),
+  };
+}
+
 function isZeroTokenRequest(entry) {
-  return (entry.promptTokens || 0) === 0 && (entry.completionTokens || 0) === 0;
+  const error = getUsageError(entry);
+  return error.zeroTokenError;
+}
+
+function toRecentRequest(entry) {
+  const error = getUsageError(entry);
+  return {
+    timestamp: entry.timestamp,
+    model: entry.model,
+    provider: entry.provider || "",
+    promptTokens: error.promptTokens,
+    completionTokens: error.completionTokens,
+    status: entry.status || "ok",
+    isError: error.isError,
+    errorReason: error.reason,
+  };
+}
+
+function dedupeRecentRequests(entries, limit = RECENT_REQUEST_LIMIT) {
+  const seen = new Set();
+  return entries
+    .filter((e) => e?.timestamp && e?.model)
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+    .filter((e) => {
+      if (isZeroTokenRequest(e)) return true;
+      const minute = e.timestamp ? e.timestamp.slice(0, 16) : "";
+      const key = `${e.model}|${e.provider}|${e.promptTokens}|${e.completionTokens}|${minute}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, limit);
+}
+
+function getRecentErrorDetailRequests(db, limit = 50) {
+  try {
+    const rows = db.all(
+      `SELECT data FROM requestDetails
+       WHERE LOWER(COALESCE(status, '')) NOT IN ('', 'ok', 'success')
+       ORDER BY timestamp DESC
+       LIMIT ?`,
+      [limit]
+    );
+    return rows.map((r) => toRecentRequest(parseJson(r.data, {}) || {}));
+  } catch {
+    return [];
+  }
 }
 
 async function getConnectionMapCached() {
@@ -123,10 +209,10 @@ async function ensureRingInitialized() {
   recentRing.initialized = true;
   try {
     const db = await getAdapter();
-    const rows = db.all(`SELECT timestamp, provider, model, connectionId, apiKey, endpoint, cost, status, tokens FROM usageHistory ORDER BY id DESC LIMIT ?`, [RING_CAP]);
+    const rows = db.all(`SELECT timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens FROM usageHistory ORDER BY id DESC LIMIT ?`, [RING_CAP]);
     recentRing.items = rows.reverse().map((r) => ({
       timestamp: r.timestamp, provider: r.provider, model: r.model, connectionId: r.connectionId,
-      apiKey: r.apiKey, endpoint: r.endpoint, cost: r.cost, status: r.status,
+      apiKey: r.apiKey, endpoint: r.endpoint, promptTokens: r.promptTokens, completionTokens: r.completionTokens, cost: r.cost, status: r.status,
       tokens: parseJson(r.tokens, {}),
     }));
   } catch {}
@@ -251,27 +337,11 @@ export async function getActiveRequests() {
   }
 
   await ensureRingInitialized();
-  const seen = new Set();
-  const recentRequests = [...recentRing.items]
-    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-    .map((e) => {
-      const t = e.tokens || {};
-      return {
-        timestamp: e.timestamp, model: e.model, provider: e.provider || "",
-        promptTokens: t.prompt_tokens || t.input_tokens || 0,
-        completionTokens: t.completion_tokens || t.output_tokens || 0,
-        status: e.status || "ok",
-      };
-    })
-    .filter((e) => {
-      if (isZeroTokenRequest(e)) return true;
-      const minute = e.timestamp ? e.timestamp.slice(0, 16) : "";
-      const key = `${e.model}|${e.provider}|${e.promptTokens}|${e.completionTokens}|${minute}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .slice(0, 20);
+  const db = await getAdapter();
+  const recentRequests = dedupeRecentRequests([
+    ...recentRing.items.map(toRecentRequest),
+    ...getRecentErrorDetailRequests(db, RECENT_REQUEST_LIMIT),
+  ]);
 
   const errorProvider = (Date.now() - lastErrorProvider.ts < 10000) ? lastErrorProvider.provider : "";
   return { activeRequests, recentRequests, errorProvider };
@@ -382,6 +452,204 @@ function loadDaysInRange(adapter, maxDays) {
   return adapter.all(`SELECT dateKey, data FROM usageDaily WHERE dateKey >= ?`, [cutoffKey]);
 }
 
+function getPeriodStart(period, now = new Date()) {
+  if (period === "today") {
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    return startOfDay.getTime();
+  }
+  if (PERIOD_MS[period]) return now.getTime() - PERIOD_MS[period];
+  return null;
+}
+
+function getErrorRanges(now = new Date()) {
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  return [
+    { key: "today", label: "Today", start: startOfToday.getTime() },
+    { key: "24h", label: "24h", start: now.getTime() - PERIOD_MS["24h"] },
+    { key: "7d", label: "7D", start: now.getTime() - PERIOD_MS["7d"] },
+    { key: "30d", label: "30D", start: now.getTime() - PERIOD_MS["30d"] },
+    { key: "60d", label: "60D", start: now.getTime() - PERIOD_MS["60d"] },
+    { key: "1y", label: "1Y", start: now.getTime() - PERIOD_MS["1y"] },
+  ];
+}
+
+function getUsageErrorCounts(db) {
+  const now = new Date();
+  const ranges = getErrorRanges(now).map((range) => ({
+    ...range,
+    count: 0,
+    statusErrorCount: 0,
+    zeroTokenCount: 0,
+    providers: {},
+  }));
+  const earliest = Math.min(...ranges.map((r) => r.start));
+  const rows = db.all(
+    `SELECT timestamp, provider, model, promptTokens, completionTokens, status, tokens
+     FROM usageHistory
+     WHERE timestamp >= ?`,
+    [new Date(earliest).toISOString()]
+  );
+
+  for (const row of rows) {
+    const ts = new Date(row.timestamp).getTime();
+    if (!Number.isFinite(ts)) continue;
+
+    const error = getUsageError({ ...row, tokens: parseJson(row.tokens, {}) || {} });
+    if (!error.isError) continue;
+
+    const provider = row.provider || "unknown";
+    for (const range of ranges) {
+      if (ts < range.start || ts > now.getTime()) continue;
+
+      range.count += 1;
+      if (error.statusError) range.statusErrorCount += 1;
+      if (error.zeroTokenError) range.zeroTokenCount += 1;
+      if (!range.providers[provider]) {
+        range.providers[provider] = { provider, count: 0, statusErrorCount: 0, zeroTokenCount: 0 };
+      }
+      range.providers[provider].count += 1;
+      if (error.statusError) range.providers[provider].statusErrorCount += 1;
+      if (error.zeroTokenError) range.providers[provider].zeroTokenCount += 1;
+    }
+  }
+
+  return ranges.map(({ start, providers, ...range }) => ({
+    ...range,
+    providers: Object.values(providers)
+      .sort((a, b) => b.count - a.count || a.provider.localeCompare(b.provider))
+      .slice(0, 5),
+  }));
+}
+
+function createModelProviderRow(model) {
+  return {
+    model,
+    totalRequests: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    cost: 0,
+    errorCount: 0,
+    zeroTokenCount: 0,
+    statusErrorCount: 0,
+    providerCount: 0,
+    lastUsed: null,
+    providers: {},
+  };
+}
+
+function createProviderUsageRow(provider) {
+  return {
+    provider,
+    requests: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    cost: 0,
+    errorCount: 0,
+    zeroTokenCount: 0,
+    statusErrorCount: 0,
+    lastUsed: null,
+  };
+}
+
+function withErrorRate(row) {
+  const total = row.totalRequests || row.requests || 0;
+  return {
+    ...row,
+    errorRate: total > 0 ? (row.errorCount || 0) / total : 0,
+  };
+}
+
+function getModelProviderUsage(db, period = "all") {
+  const now = new Date();
+  const start = getPeriodStart(period, now);
+  const params = [];
+  let where = "";
+  if (start != null) {
+    where = "WHERE timestamp >= ?";
+    params.push(new Date(start).toISOString());
+  }
+
+  const rows = db.all(
+    `SELECT timestamp, provider, model, promptTokens, completionTokens, cost, status, tokens
+     FROM usageHistory
+     ${where}
+     ORDER BY timestamp DESC`,
+    params
+  );
+  const modelMap = {};
+  const providerTotals = {};
+
+  for (const row of rows) {
+    const model = row.model || "Unknown Model";
+    const provider = row.provider || "unknown";
+    const tokens = parseJson(row.tokens, {}) || {};
+    const promptTokens = getPromptTokens({ ...row, tokens });
+    const completionTokens = getCompletionTokens({ ...row, tokens });
+    const totalTokens = promptTokens + completionTokens;
+    const cost = row.cost || 0;
+    const error = getUsageError({ ...row, tokens });
+
+    if (!modelMap[model]) modelMap[model] = createModelProviderRow(model);
+    if (!modelMap[model].providers[provider]) modelMap[model].providers[provider] = createProviderUsageRow(provider);
+    if (!providerTotals[provider]) providerTotals[provider] = createProviderUsageRow(provider);
+
+    const modelRow = modelMap[model];
+    const providerRow = modelRow.providers[provider];
+    const providerTotal = providerTotals[provider];
+    for (const target of [modelRow, providerRow, providerTotal]) {
+      target.totalRequests = (target.totalRequests || 0) + 1;
+      target.requests = (target.requests || 0) + 1;
+      target.promptTokens += promptTokens;
+      target.completionTokens += completionTokens;
+      target.totalTokens += totalTokens;
+      target.cost += cost;
+      if (error.isError) target.errorCount += 1;
+      if (error.zeroTokenError) target.zeroTokenCount += 1;
+      if (error.statusError) target.statusErrorCount += 1;
+      if (row.timestamp && (!target.lastUsed || new Date(row.timestamp) > new Date(target.lastUsed))) {
+        target.lastUsed = row.timestamp;
+      }
+    }
+  }
+
+  const models = Object.values(modelMap)
+    .map((modelRow) => {
+      const providers = Object.values(modelRow.providers)
+        .map(withErrorRate)
+        .sort((a, b) => b.requests - a.requests || a.provider.localeCompare(b.provider));
+      return withErrorRate({
+        ...modelRow,
+        providerCount: providers.length,
+        providers,
+      });
+    })
+    .sort((a, b) => b.totalRequests - a.totalRequests || a.model.localeCompare(b.model))
+    .slice(0, 80);
+
+  const topProviders = Object.values(providerTotals)
+    .map(withErrorRate)
+    .sort((a, b) => b.requests - a.requests || a.provider.localeCompare(b.provider))
+    .slice(0, 12);
+
+  const totalRequests = rows.length;
+  const totalErrors = Object.values(modelMap).reduce((sum, row) => sum + (row.errorCount || 0), 0);
+
+  return {
+    period,
+    totalModels: Object.keys(modelMap).length,
+    totalProviders: Object.keys(providerTotals).length,
+    totalRequests,
+    totalErrors,
+    errorRate: totalRequests > 0 ? totalErrors / totalRequests : 0,
+    topProviders,
+    models,
+  };
+}
+
 export async function getUsageStats(period = "all") {
   const db = await getAdapter();
 
@@ -407,28 +675,14 @@ export async function getUsageStats(period = "all") {
   const apiKeyMap = {};
   for (const k of allApiKeys) apiKeyMap[k.key] = { name: k.name, id: k.id, createdAt: k.createdAt };
 
-  // recentRequests from live history (last 100 entries enough for 20 deduped)
-  const recentRows = db.all(`SELECT timestamp, provider, model, tokens, status FROM usageHistory ORDER BY id DESC LIMIT 100`);
-  const seen = new Set();
-  const recentRequests = recentRows
-    .map((r) => {
-      const t = parseJson(r.tokens, {}) || {};
-      return {
-        timestamp: r.timestamp, model: r.model, provider: r.provider || "",
-        promptTokens: t.prompt_tokens || t.input_tokens || 0,
-        completionTokens: t.completion_tokens || t.output_tokens || 0,
-        status: r.status || "ok",
-      };
-    })
-    .filter((e) => {
-      if (isZeroTokenRequest(e)) return true;
-      const minute = e.timestamp ? e.timestamp.slice(0, 16) : "";
-      const key = `${e.model}|${e.provider}|${e.promptTokens}|${e.completionTokens}|${minute}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .slice(0, 20);
+  const recentRows = db.all(
+    `SELECT timestamp, provider, model, promptTokens, completionTokens, tokens, status FROM usageHistory ORDER BY id DESC LIMIT ?`,
+    [RECENT_HISTORY_SCAN_LIMIT]
+  );
+  const recentRequests = dedupeRecentRequests([
+    ...recentRows.map((r) => toRecentRequest({ ...r, tokens: parseJson(r.tokens, {}) || {} })),
+    ...getRecentErrorDetailRequests(db, RECENT_REQUEST_LIMIT),
+  ]);
 
   const stats = {
     totalRequests: 0,
@@ -438,6 +692,8 @@ export async function getUsageStats(period = "all") {
     pending: pendingRequests,
     activeRequests: [],
     recentRequests,
+    errorCounts: getUsageErrorCounts(db),
+    modelProviderUsage: getModelProviderUsage(db, period),
     errorProvider: (Date.now() - lastErrorProvider.ts < 10000) ? lastErrorProvider.provider : "",
   };
 
@@ -484,7 +740,7 @@ export async function getUsageStats(period = "all") {
   const useDailySummary = period !== "24h" && period !== "today";
 
   if (useDailySummary) {
-    const periodDays = { "7d": 7, "30d": 30, "60d": 60 };
+    const periodDays = { "7d": 7, "30d": 30, "60d": 60, "1y": 365 };
     const maxDays = periodDays[period] || null;
     const dayRows = loadDaysInRange(db, maxDays);
 
@@ -612,8 +868,8 @@ export async function getUsageStats(period = "all") {
 
     for (const r of filtered) {
       const tokens = parseJson(r.tokens, {}) || {};
-      const promptTokens = tokens.prompt_tokens || 0;
-      const completionTokens = tokens.completion_tokens || 0;
+      const promptTokens = getPromptTokens({ ...r, tokens });
+      const completionTokens = getCompletionTokens({ ...r, tokens });
       const entryCost = r.cost || 0;
       const providerDisplayName = providerNodeNameMap[r.provider] || r.provider;
 
@@ -736,6 +992,31 @@ export async function getChartData(period = "7d") {
     return buckets;
   }
 
+  if (period === "1y" || period === "all") {
+    const dayRows = period === "1y" ? loadDaysInRange(db, 365) : loadDaysInRange(db, null);
+    const monthMap = {};
+    for (const row of dayRows) {
+      const dayData = parseJson(row.data, {});
+      const monthKey = String(row.dateKey || "").slice(0, 7);
+      if (!monthKey) continue;
+      if (!monthMap[monthKey]) monthMap[monthKey] = { tokens: 0, cost: 0 };
+      monthMap[monthKey].tokens += (dayData.promptTokens || 0) + (dayData.completionTokens || 0);
+      monthMap[monthKey].cost += dayData.cost || 0;
+    }
+
+    return Object.entries(monthMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([monthKey, data]) => {
+        const [year, month] = monthKey.split("-").map(Number);
+        const d = new Date(year, (month || 1) - 1, 1);
+        return {
+          label: d.toLocaleDateString("en-US", { month: "short", year: "2-digit" }),
+          tokens: data.tokens,
+          cost: data.cost,
+        };
+      });
+  }
+
   const bucketCount = period === "7d" ? 7 : period === "30d" ? 30 : 60;
   const today = new Date();
   const labelFn = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -788,8 +1069,8 @@ export async function getRecentLogs(limit = 200) {
       const m = r.model || "-";
       const account = connMap[r.connectionId] || (r.connectionId ? r.connectionId.slice(0, 8) : "-");
       const tk = r.tokens ? parseJson(r.tokens, {}) : {};
-      const sent = r.promptTokens ?? tk.prompt_tokens ?? "-";
-      const received = r.completionTokens ?? tk.completion_tokens ?? "-";
+      const sent = r.promptTokens ?? tk.prompt_tokens ?? tk.input_tokens ?? "-";
+      const received = r.completionTokens ?? tk.completion_tokens ?? tk.output_tokens ?? "-";
       return `${ts} | ${m} | ${p} | ${account} | ${sent} | ${received} | ${r.status || "-"}`;
     });
   } catch (e) {

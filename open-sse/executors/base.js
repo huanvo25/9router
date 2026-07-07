@@ -96,6 +96,14 @@ export class BaseExecutor {
     return { status: response.status, message: bodyText || `HTTP ${response.status}` };
   }
 
+  isConnectTimeoutError(error, connectCtrl) {
+    if (!connectCtrl?.signal?.aborted) return false;
+    const reason = connectCtrl.signal.reason;
+    const reasonMessage = reason?.message || String(reason || "");
+    const errorMessage = error?.message || "";
+    return reasonMessage.includes("fetch connect timeout") || errorMessage.includes("fetch connect timeout");
+  }
+
   async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
     const fallbackCount = this.getFallbackCount();
     let lastError = null;
@@ -163,10 +171,12 @@ export class BaseExecutor {
       } catch (error) {
         clearTimeout(connectTimer);
         lastError = error;
-        const isConnectTimeout = connectCtrl.signal.aborted && error.name === "AbortError";
+        const isConnectTimeout = this.isConnectTimeoutError(error, connectCtrl);
         dbg("FETCH", `${this.provider.toUpperCase()} ✖ ${error.name}: ${error.message}${isConnectTimeout ? " (connect timeout)" : ""}`);
-        // Connect timeout is internal — convert to retryable network error, don't propagate AbortError
+        // Client aborts must propagate; internal header timeouts should fail fast
+        // so clients and dashboards are not held through repeated dead connects.
         if (error.name === "AbortError" && !isConnectTimeout) throw error;
+        if (isConnectTimeout) throw error;
 
         // Map network/fetch exceptions to 502 retry config
         if (await tryRetry(urlIndex, HTTP_STATUS.BAD_GATEWAY, `network "${error.message}"`)) { urlIndex--; continue; }

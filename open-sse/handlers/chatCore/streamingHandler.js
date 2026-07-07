@@ -8,7 +8,7 @@ import { buildAbortedResponsesTerminalBytes } from "../../utils/responsesStreamH
 import { buildRequestDetail, extractRequestConfig, saveUsageStats } from "./requestDetail.js";
 import { saveRequestDetail } from "@/lib/usageDb.js";
 import { SSE_HEADERS_CORS as SSE_HEADERS } from "../../utils/sseConstants.js";
-import { estimateUsage, hasValidUsage } from "../../utils/usageTracking.js";
+import { ensureObservedOutputUsage, estimateUsage, hasValidUsage } from "../../utils/usageTracking.js";
 
 // Codex returns Responses API SSE → which client format to translate INTO, by request sourceFormat.
 // Gemini-family all map to ANTIGRAVITY decoder; unknown sources fall back to OPENAI.
@@ -100,11 +100,17 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
       ttft: ttftAt ? ttftAt - requestStartTime : Date.now() - requestStartTime,
       total: Date.now() - requestStartTime
     };
-    const safeContent = contentObj?.content || "[Empty streaming response]";
+    const rawContent = contentObj?.content || "";
+    const safeContent = rawContent || "[Empty streaming response]";
     const safeThinking = contentObj?.thinking || null;
-    const effectiveUsage = hasValidUsage(usage)
+    let effectiveUsage = hasValidUsage(usage)
       ? usage
-      : estimateUsage(finalBody || translatedBody || body, `${safeContent || ""}${safeThinking || ""}`.length);
+      : estimateUsage(finalBody || translatedBody || body, `${rawContent || ""}${safeThinking || ""}`.length);
+    effectiveUsage = ensureObservedOutputUsage(
+      effectiveUsage,
+      finalBody || translatedBody || body,
+      `${rawContent || ""}${safeThinking || ""}`.length
+    );
 
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,

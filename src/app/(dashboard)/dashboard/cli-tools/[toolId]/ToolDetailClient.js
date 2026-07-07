@@ -116,7 +116,7 @@ export default function ToolDetailClient({ toolId, machineId }) {
 
     switch (toolId) {
       case "claude":
-        return <ClaudeToolCard {...commonProps} activeProviders={getActiveProviders()} modelMappings={modelMappings[toolId] || {}} onModelMappingChange={(a, t) => handleModelMappingChange(toolId, a, t)} hasActiveProviders={hasActiveProviders} cloudEnabled={cloudEnabled} />;
+        return <ClaudeToolCard {...commonProps} activeProviders={getActiveProviders()} availableModels={availableModels} modelMappings={modelMappings[toolId] || {}} onModelMappingChange={(a, t) => handleModelMappingChange(toolId, a, t)} hasActiveProviders={hasActiveProviders} cloudEnabled={cloudEnabled} />;
       case "codex":
         return <CodexToolCard {...commonProps} activeProviders={getActiveProviders()} cloudEnabled={cloudEnabled} />;
       case "opencode":

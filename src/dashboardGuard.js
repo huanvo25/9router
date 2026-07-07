@@ -147,7 +147,8 @@ async function canAccessLocalOnlyRoute(request) {
 
 async function hasValidToken(request) {
   const token = request.cookies.get("auth_token")?.value;
-  return await verifyDashboardAuthToken(token);
+  const deviceId = request.cookies.get("auth_device_id")?.value;
+  return await verifyDashboardAuthToken(token, deviceId);
 }
 
 // Read settings directly from DB to avoid self-fetch deadlock in proxy
@@ -239,8 +240,9 @@ export async function proxy(request) {
 
     // Verify JWT token
     const token = request.cookies.get("auth_token")?.value;
+    const deviceId = request.cookies.get("auth_device_id")?.value;
     if (token) {
-      if (await verifyDashboardAuthToken(token)) {
+      if (await verifyDashboardAuthToken(token, deviceId)) {
         return NextResponse.next();
       } else {
         return NextResponse.redirect(new URL("/login", request.url));
