@@ -320,6 +320,18 @@ describe("DB SQLite layer — public API parity", () => {
       request: { method: "POST" },
       response: { status: 200 },
     });
+    await sqliteDb.saveRequestDetail({
+      id: "kiro-stream-placeholder",
+      timestamp: new Date(now - 400).toISOString(),
+      provider: "kiro",
+      model: "kiro-stream-placeholder",
+      connectionId: "kiro-c1",
+      status: "success",
+      tokens: { prompt_tokens: 0, completion_tokens: 0 },
+      request: { method: "POST" },
+      providerResponse: "[Streaming - raw response not captured]",
+      response: { content: "[Streaming in progress...]", thinking: null, type: "streaming" },
+    });
 
     await new Promise((r) => setTimeout(r, 200));
 
@@ -340,6 +352,7 @@ describe("DB SQLite layer — public API parity", () => {
     expect(recentKiroZero).toMatchObject({ provider: "kiro", isError: true });
     expect(recentKiroZero.errorReason).toContain("input=0");
     expect(recentKiroZero.errorReason).toContain("output=0");
+    expect(stats.recentRequests.find((request) => request.model === "kiro-stream-placeholder")).toBeUndefined();
 
     const kiroModelRow = stats.modelProviderUsage.models.find(
       (row) => row.provider === "kiro" && row.model === "kiro-zero-detail"
@@ -350,6 +363,9 @@ describe("DB SQLite layer — public API parity", () => {
       zeroTokenCount: 1,
       errorRate: 1,
     });
+    expect(stats.modelProviderUsage.models.find(
+      (row) => row.provider === "kiro" && row.model === "kiro-stream-placeholder"
+    )).toBeUndefined();
 
     const kiroErrorProvider = errorCounts["24h"].providers.find((provider) => provider.provider === "kiro");
     expect(kiroErrorProvider).toMatchObject({

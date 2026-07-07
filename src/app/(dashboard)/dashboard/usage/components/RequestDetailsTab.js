@@ -91,7 +91,23 @@ function getOutputTokens(tokens) {
   return normalizeUsageTokens(tokens).completionTokens;
 }
 
+function isStreamingPlaceholderDetail(detail = {}) {
+  return detail.status === "success"
+    && detail.providerResponse === "[Streaming - raw response not captured]"
+    && detail.response?.content === "[Streaming in progress...]"
+    && detail.response?.type === "streaming";
+}
+
 function getDetailErrorInfo(detail = {}) {
+  if (isStreamingPlaceholderDetail(detail)) {
+    return {
+      isError: false,
+      inputZero: false,
+      outputZero: false,
+      label: "Stream placeholder",
+    };
+  }
+
   const errorInfo = getUsageErrorInfo(detail);
   const labels = [];
 

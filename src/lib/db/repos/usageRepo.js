@@ -262,6 +262,10 @@ function dedupeRecentRequests(entries, limit = RECENT_REQUEST_LIMIT) {
 function toRequestDetailUsageEntry(detail = {}, providerLookups = {}) {
   const error = getUsageError(detail);
   const { provider, providerName } = resolveUsageProvider(detail, providerLookups);
+  const isStreamingPlaceholder = detail.status === "success"
+    && detail.providerResponse === "[Streaming - raw response not captured]"
+    && detail.response?.content === "[Streaming in progress...]"
+    && detail.response?.type === "streaming";
   return {
     timestamp: detail.timestamp,
     model: detail.model,
@@ -276,6 +280,7 @@ function toRequestDetailUsageEntry(detail = {}, providerLookups = {}) {
     isError: error.isError,
     errorReason: error.reason,
     _usageError: error,
+    _isStreamingPlaceholder: isStreamingPlaceholder,
     _source: "requestDetails",
   };
 }
@@ -305,6 +310,7 @@ function getErrorDetailUsageEntries(db, options = {}, providerLookups = {}) {
     return rows
       .map((r) => toRequestDetailUsageEntry(parseJson(r.data, {}) || {}, providerLookups))
       .filter((entry) => entry.isError)
+      .filter((entry) => !entry._isStreamingPlaceholder)
       .filter((entry) => !excludeKeys?.has(getUsageEventKey(entry)));
   } catch {
     return [];
