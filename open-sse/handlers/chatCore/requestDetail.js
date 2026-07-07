@@ -1,4 +1,5 @@
 import { saveRequestUsage, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
+import { normalizeUsageTokenObject, normalizeUsageTokens } from "@/shared/utils/usageTokens";
 import { COLORS } from "../../utils/stream.js";
 
 const OPTIONAL_PARAMS = [
@@ -23,41 +24,19 @@ export function extractRequestConfig(body, stream) {
 export function extractUsageFromResponse(responseBody) {
   if (!responseBody || typeof responseBody !== "object") return null;
 
-  const positiveToken = (...values) => {
-    for (const value of values) {
-      const numeric = Number(value);
-      if (Number.isFinite(numeric) && numeric > 0) return numeric;
-    }
-    return 0;
-  };
+  const hasKnownUsageFields = (usage) => usage && typeof usage === "object" && [
+    "prompt_tokens", "completion_tokens", "input_tokens", "output_tokens",
+    "promptTokens", "completionTokens", "inputTokens", "outputTokens",
+    "promptTokenCount", "candidatesTokenCount", "prompt_eval_count", "eval_count",
+    "total_tokens", "totalTokens", "totalTokenCount"
+  ].some((key) => Object.prototype.hasOwnProperty.call(usage, key));
 
-  // Claude format
-  if (responseBody.usage?.input_tokens !== undefined) {
-    return {
-      prompt_tokens: responseBody.usage.input_tokens || responseBody.usage.prompt_tokens || 0,
-      completion_tokens: positiveToken(responseBody.usage.output_tokens, responseBody.usage.completion_tokens),
-      cache_read_input_tokens: responseBody.usage.cache_read_input_tokens,
-      cache_creation_input_tokens: responseBody.usage.cache_creation_input_tokens
-    };
+  if (hasKnownUsageFields(responseBody.usage)) {
+    return normalizeUsageTokenObject(responseBody.usage);
   }
 
-  // OpenAI format
-  if (responseBody.usage?.prompt_tokens !== undefined) {
-    return {
-      prompt_tokens: responseBody.usage.prompt_tokens || 0,
-      completion_tokens: responseBody.usage.completion_tokens || 0,
-      cached_tokens: responseBody.usage.prompt_tokens_details?.cached_tokens,
-      reasoning_tokens: responseBody.usage.completion_tokens_details?.reasoning_tokens
-    };
-  }
-
-  // Gemini format
   if (responseBody.usageMetadata) {
-    return {
-      prompt_tokens: responseBody.usageMetadata.promptTokenCount || 0,
-      completion_tokens: responseBody.usageMetadata.candidatesTokenCount || 0,
-      reasoning_tokens: responseBody.usageMetadata.thoughtsTokenCount
-    };
+    return normalizeUsageTokenObject({ usageMetadata: responseBody.usageMetadata });
   }
 
   return null;
@@ -70,7 +49,7 @@ export function buildRequestDetail(base, overrides = {}) {
     connectionId: base.connectionId || undefined,
     timestamp: new Date().toISOString(),
     latency: base.latency || { ttft: 0, total: 0 },
-    tokens: base.tokens || { prompt_tokens: 0, completion_tokens: 0 },
+    tokens: normalizeUsageTokenObject(base.tokens || { prompt_tokens: 0, completion_tokens: 0 }),
     request: base.request,
     providerRequest: base.providerRequest || null,
     providerResponse: base.providerResponse || null,
@@ -85,32 +64,16 @@ export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, 
     tokens = { prompt_tokens: 0, completion_tokens: 0 };
   }
 
-  const inTokens = Math.max(Number(tokens.input_tokens) || 0, Number(tokens.prompt_tokens) || 0);
-  const outTokens = Math.max(Number(tokens.output_tokens) || 0, Number(tokens.completion_tokens) || 0);
+  const usageTotals = normalizeUsageTokens(tokens);
+  const inTokens = usageTotals.promptTokens;
+  const outTokens = usageTotals.completionTokens;
 
   const time = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const accountSuffix = connectionId ? ` | account=${connectionId.slice(0, 8)}...` : "";
   console.log(`${COLORS.green}[${time}] 📊 [${label}] ${provider.toUpperCase()} | in=${inTokens} | out=${outTokens}${accountSuffix}${COLORS.reset}`);
 
   // Normalize to OpenAI token shape for storage
-  const normalized = {
-    prompt_tokens: tokens.prompt_tokens ?? tokens.input_tokens ?? 0,
-    completion_tokens: tokens.completion_tokens ?? tokens.output_tokens ?? 0
-  };
-  const totalTokens = tokens.total_tokens
-    ?? (normalized.prompt_tokens + normalized.completion_tokens);
-  if (Number.isFinite(Number(totalTokens))) {
-    normalized.total_tokens = Number(totalTokens);
-  }
-  if (tokens.estimated === true) {
-    normalized.estimated = true;
-  }
-  if (tokens.cached_tokens !== undefined) normalized.cached_tokens = tokens.cached_tokens;
-  if (tokens.cache_read_input_tokens !== undefined) normalized.cache_read_input_tokens = tokens.cache_read_input_tokens;
-  if (tokens.cache_creation_input_tokens !== undefined) normalized.cache_creation_input_tokens = tokens.cache_creation_input_tokens;
-  if (tokens.reasoning_tokens !== undefined) normalized.reasoning_tokens = tokens.reasoning_tokens;
-  if (tokens.prompt_tokens_details !== undefined) normalized.prompt_tokens_details = tokens.prompt_tokens_details;
-  if (tokens.completion_tokens_details !== undefined) normalized.completion_tokens_details = tokens.completion_tokens_details;
+  const normalized = normalizeUsageTokenObject(tokens);
 
   saveRequestUsage({
     provider: provider || "unknown",

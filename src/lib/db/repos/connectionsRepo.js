@@ -56,6 +56,15 @@ function upsert(db, c) {
   );
 }
 
+function nextProviderUpdatedAt(db, providerId) {
+  const rows = db.all(`SELECT updatedAt FROM providerConnections WHERE provider = ?`, [providerId]);
+  const maxUpdatedAt = rows.reduce((max, row) => {
+    const ms = Date.parse(row.updatedAt || "");
+    return Number.isFinite(ms) ? Math.max(max, ms) : max;
+  }, 0);
+  return new Date(Math.max(Date.now(), maxUpdatedAt + 1)).toISOString();
+}
+
 export async function getProviderConnections(filter = {}) {
   const db = await getAdapter();
   const where = [];
@@ -167,7 +176,7 @@ export async function updateProviderConnection(id, data) {
     const row = db.get(`SELECT * FROM providerConnections WHERE id = ?`, [id]);
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
-    const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
+    const merged = { ...existing, ...data, updatedAt: nextProviderUpdatedAt(db, existing.provider) };
     upsert(db, merged);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     result = merged;

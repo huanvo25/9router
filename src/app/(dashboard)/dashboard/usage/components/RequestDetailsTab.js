@@ -7,6 +7,7 @@ import Drawer from "@/shared/components/Drawer";
 import Pagination from "@/shared/components/Pagination";
 import { cn } from "@/shared/utils/cn";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
+import { getUsageErrorInfo, normalizeUsageTokens } from "@/shared/utils/usageTokens";
 
 let providerNameCache = null;
 let providerNodesCache = null;
@@ -83,9 +84,27 @@ function CollapsibleSection({ title, children, defaultOpen = false, icon = null 
 }
 
 function getInputTokens(tokens) {
-  const prompt = tokens?.prompt_tokens || tokens?.input_tokens || 0;
-  const cache = tokens?.cached_tokens || tokens?.cache_read_input_tokens || 0;
-  return prompt < cache ? cache : prompt;
+  return normalizeUsageTokens(tokens).promptTokens;
+}
+
+function getOutputTokens(tokens) {
+  return normalizeUsageTokens(tokens).completionTokens;
+}
+
+function getDetailErrorInfo(detail = {}) {
+  const errorInfo = getUsageErrorInfo(detail);
+  const labels = [];
+
+  if (errorInfo.statusError) labels.push("Lỗi trạng thái");
+  if (errorInfo.inputZero) labels.push("Input = 0");
+  if (errorInfo.outputZero) labels.push("Output = 0");
+
+  return {
+    isError: errorInfo.isError,
+    inputZero: errorInfo.inputZero,
+    outputZero: errorInfo.outputZero,
+    label: labels.length ? labels.join(" · ") : "OK",
+  };
 }
 
 function formatRequestTime(timestamp) {
@@ -177,6 +196,8 @@ export default function RequestDetailsTab() {
     setFilters({ provider: "", startDate: "", endDate: "" });
   };
 
+  const selectedErrorInfo = selectedDetail ? getDetailErrorInfo(selectedDetail) : null;
+
   return (
     <div className="flex min-w-0 flex-col gap-6">
       <Card padding="md">
@@ -247,7 +268,7 @@ export default function RequestDetailsTab() {
 
       <Card padding="none">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1120px]">
+          <table className="w-full min-w-[1240px]">
             <thead>
               <tr className="border-b border-black/5 dark:border-white/5">
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Thời gian UTC+7</th>
@@ -255,6 +276,7 @@ export default function RequestDetailsTab() {
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Providers</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Input Tokens</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Output Tokens</th>
+                <th className="text-left p-4 text-sm font-semibold text-text-main">Lỗi</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Latency</th>
                 <th className="text-center p-4 text-sm font-semibold text-text-main">Action</th>
               </tr>
@@ -262,7 +284,7 @@ export default function RequestDetailsTab() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="7" className="p-8 text-center text-text-muted">
+                  <td colSpan="8" className="p-8 text-center text-text-muted">
                     <div className="flex items-center justify-center gap-2">
                       <span className="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
                       Loading...
@@ -271,50 +293,74 @@ export default function RequestDetailsTab() {
                 </tr>
               ) : details.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="p-8 text-center text-text-muted">
+                  <td colSpan="8" className="p-8 text-center text-text-muted">
                     No request details found
                   </td>
                 </tr>
               ) : (
-                details.map((detail, index) => (
-                  <tr
-                    key={`${detail.id}-${index}`}
-                    className="border-b border-black/5 dark:border-white/5 last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors"
-                  >
-                    <td className="whitespace-nowrap p-4 text-sm text-text-main">
-                      {formatRequestTime(detail.timestamp)}
-                    </td>
-                    <td className="max-w-[420px] break-all p-4 font-mono text-sm leading-snug text-text-main">
-                      {detail.model}
-                    </td>
-                    <td className="max-w-[260px] p-4 text-sm text-text-main">
-                       <span className="font-medium">
-                         {getProviderName(detail.provider, providerNameCache)}
-                       </span>
-                     </td>
-                    <td className="p-4 text-sm text-text-main text-right font-mono">
-                      {getInputTokens(detail.tokens).toLocaleString()}
-                    </td>
-                    <td className="p-4 text-sm text-text-main text-right font-mono">
-                      {detail.tokens?.completion_tokens?.toLocaleString() || 0}
-                    </td>
-                    <td className="p-4 text-sm text-text-muted">
-                      <div className="flex flex-col gap-0.5">
-                        <div>TTFT: <span className="font-mono">{detail.latency?.ttft || 0}ms</span></div>
-                        <div>Total: <span className="font-mono">{detail.latency?.total || 0}ms</span></div>
-                      </div>
-                    </td>
-                    <td className="p-4 text-center">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleViewDetail(detail)}
-                      >
-                        Detail
-                      </Button>
-                    </td>
-                  </tr>
-                ))
+                details.map((detail, index) => {
+                  const errorInfo = getDetailErrorInfo(detail);
+                  return (
+                    <tr
+                      key={`${detail.id}-${index}`}
+                      className={cn(
+                        "border-b border-black/5 transition-colors last:border-b-0 dark:border-white/5",
+                        errorInfo.isError
+                          ? "bg-red-500/[0.03] hover:bg-red-500/[0.07]"
+                          : "hover:bg-black/[0.02] dark:hover:bg-white/[0.02]"
+                      )}
+                    >
+                      <td className="whitespace-nowrap p-4 text-sm text-text-main">
+                        {formatRequestTime(detail.timestamp)}
+                      </td>
+                      <td className="max-w-[420px] break-all p-4 font-mono text-sm leading-snug text-text-main">
+                        {detail.model}
+                      </td>
+                      <td className="max-w-[260px] p-4 text-sm text-text-main">
+                         <span className="font-medium">
+                           {getProviderName(detail.provider, providerNameCache)}
+                         </span>
+                       </td>
+                      <td className={cn(
+                        "p-4 text-right font-mono text-sm",
+                        errorInfo.inputZero ? "font-semibold text-red-600 dark:text-red-400" : "text-text-main"
+                      )}>
+                        {getInputTokens(detail.tokens).toLocaleString()}
+                      </td>
+                      <td className={cn(
+                        "p-4 text-right font-mono text-sm",
+                        errorInfo.outputZero ? "font-semibold text-red-600 dark:text-red-400" : "text-text-main"
+                      )}>
+                        {getOutputTokens(detail.tokens).toLocaleString()}
+                      </td>
+                      <td className="p-4 text-sm">
+                        <span className={cn(
+                          "inline-flex max-w-[220px] rounded-md px-2 py-0.5 text-[11px] font-semibold",
+                          errorInfo.isError
+                            ? "bg-red-500/10 text-red-600 dark:text-red-400"
+                            : "bg-green-500/10 text-green-600 dark:text-green-400"
+                        )} title={errorInfo.label}>
+                          <span className="truncate">{errorInfo.label}</span>
+                        </span>
+                      </td>
+                      <td className="p-4 text-sm text-text-muted">
+                        <div className="flex flex-col gap-0.5">
+                          <div>TTFT: <span className="font-mono">{detail.latency?.ttft || 0}ms</span></div>
+                          <div>Total: <span className="font-mono">{detail.latency?.total || 0}ms</span></div>
+                        </div>
+                      </td>
+                      <td className="p-4 text-center">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleViewDetail(detail)}
+                        >
+                          Detail
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -362,9 +408,20 @@ export default function RequestDetailsTab() {
                 <span className="text-text-muted">Status:</span>{" "}
                 <span className={cn(
                   "font-medium",
-                  selectedDetail.status === "success" ? "text-green-600" : "text-red-600"
+                  selectedErrorInfo?.isError ? "text-red-600 dark:text-red-400" : "text-green-600 dark:text-green-400"
                 )}>
                   {selectedDetail.status}
+                </span>
+              </div>
+              <div>
+                <span className="text-text-muted">Lỗi:</span>{" "}
+                <span className={cn(
+                  "inline-flex rounded-md px-2 py-0.5 text-[11px] font-semibold",
+                  selectedErrorInfo?.isError
+                    ? "bg-red-500/10 text-red-600 dark:text-red-400"
+                    : "bg-green-500/10 text-green-600 dark:text-green-400"
+                )}>
+                  {selectedErrorInfo?.label || "OK"}
                 </span>
               </div>
               <div>
@@ -375,14 +432,20 @@ export default function RequestDetailsTab() {
               </div>
               <div>
                 <span className="text-text-muted">Input Tokens:</span>{" "}
-                <span className="text-text-main font-mono">
+                <span className={cn(
+                  "font-mono",
+                  selectedErrorInfo?.inputZero ? "font-semibold text-red-600 dark:text-red-400" : "text-text-main"
+                )}>
                   {getInputTokens(selectedDetail.tokens).toLocaleString()}
                 </span>
               </div>
               <div>
                 <span className="text-text-muted">Output Tokens:</span>{" "}
-                <span className="text-text-main font-mono">
-                  {selectedDetail.tokens?.completion_tokens?.toLocaleString() || 0}
+                <span className={cn(
+                  "font-mono",
+                  selectedErrorInfo?.outputZero ? "font-semibold text-red-600 dark:text-red-400" : "text-text-main"
+                )}>
+                  {getOutputTokens(selectedDetail.tokens).toLocaleString()}
                 </span>
               </div>
             </div>

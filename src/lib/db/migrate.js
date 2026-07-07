@@ -7,6 +7,7 @@ import { getMetaSync, setMetaSync } from "./helpers/metaStore.js";
 import { makeBackupDir, backupFile, pruneOldBackups } from "./backup.js";
 import { getAppVersion } from "./version.js";
 import { stringifyJson } from "./helpers/jsonCol.js";
+import { normalizeUsageTokenObject, normalizeUsageTokens } from "@/shared/utils/usageTokens";
 
 // Marker file: prevents re-importing legacy JSON when user wipes data.sqlite.
 const MIGRATED_MARKER = path.join(DB_DIR, ".migrated-from-json");
@@ -172,14 +173,15 @@ function importLegacyMain(adapter, data) {
 function importLegacyUsage(adapter, data) {
   if (!data || typeof data !== "object") return;
   for (const e of data.history || []) {
-    const t = e.tokens || {};
+    const t = normalizeUsageTokenObject(e);
+    const normalized = normalizeUsageTokens({ ...e, tokens: t });
     adapter.run(
       `INSERT INTO usageHistory(timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         e.timestamp || new Date().toISOString(),
         e.provider || null, e.model || null, e.connectionId || null, e.apiKey || null, e.endpoint || null,
-        t.prompt_tokens || t.input_tokens || 0,
-        t.completion_tokens || t.output_tokens || 0,
+        normalized.promptTokens,
+        normalized.completionTokens,
         e.cost || 0,
         e.status || "ok",
         stringifyJson(t),

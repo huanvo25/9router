@@ -2,6 +2,7 @@ import { EventEmitter } from "events";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
+import { getUsageErrorInfo, isUsageOkStatus, normalizeUsageTokenObject, normalizeUsageTokens } from "@/shared/utils/usageTokens";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
@@ -80,8 +81,8 @@ function addToCounter(target, key, values) {
 }
 
 function aggregateEntryToDay(day, entry) {
-  const promptTokens = entry.tokens?.prompt_tokens || entry.tokens?.input_tokens || 0;
-  const completionTokens = entry.tokens?.completion_tokens || entry.tokens?.output_tokens || 0;
+  const promptTokens = getPromptTokens(entry);
+  const completionTokens = getCompletionTokens(entry);
   const cost = entry.cost || 0;
   const vals = { promptTokens, completionTokens, cost };
 
@@ -122,40 +123,19 @@ function pushToRing(entry) {
 }
 
 function getPromptTokens(entry = {}) {
-  const tokens = entry.tokens || {};
-  return Number(entry.promptTokens ?? tokens.prompt_tokens ?? tokens.input_tokens ?? 0) || 0;
+  return normalizeUsageTokens(entry).promptTokens;
 }
 
 function getCompletionTokens(entry = {}) {
-  const tokens = entry.tokens || {};
-  return Number(entry.completionTokens ?? tokens.completion_tokens ?? tokens.output_tokens ?? 0) || 0;
+  return normalizeUsageTokens(entry).completionTokens;
 }
 
 function isOkStatus(status) {
-  const value = String(status || "").trim().toLowerCase();
-  return !value || value === "ok" || value === "success";
+  return isUsageOkStatus(status);
 }
 
 function getUsageError(entry = {}) {
-  const promptTokens = getPromptTokens(entry);
-  const completionTokens = getCompletionTokens(entry);
-  const statusError = !isOkStatus(entry.status);
-  const inputZero = promptTokens <= 0;
-  const outputZero = completionTokens <= 0;
-  const reasons = [];
-
-  if (statusError) reasons.push(`status:${entry.status || "unknown"}`);
-  if (inputZero) reasons.push("input=0");
-  if (outputZero) reasons.push("output=0");
-
-  return {
-    isError: statusError || inputZero || outputZero,
-    statusError,
-    zeroTokenError: inputZero || outputZero,
-    promptTokens,
-    completionTokens,
-    reason: reasons.join(", "),
-  };
+  return getUsageErrorInfo(entry);
 }
 
 function isZeroTokenRequest(entry) {
@@ -272,14 +252,17 @@ function dedupeRecentRequests(entries, limit = RECENT_REQUEST_LIMIT) {
 
 function getRecentErrorDetailRequests(db, limit = 50, providerLookups = {}) {
   try {
+    const scanLimit = Math.max(limit * 4, 200);
     const rows = db.all(
       `SELECT data FROM requestDetails
-       WHERE LOWER(COALESCE(status, '')) NOT IN ('', 'ok', 'success')
        ORDER BY timestamp DESC
        LIMIT ?`,
-      [limit]
+      [scanLimit]
     );
-    return rows.map((r) => toRecentRequest(parseJson(r.data, {}) || {}, providerLookups));
+    return rows
+      .map((r) => toRecentRequest(parseJson(r.data, {}) || {}, providerLookups))
+      .filter((request) => request.isError)
+      .slice(0, limit);
   } catch {
     return [];
   }
@@ -334,7 +317,8 @@ async function calculateCost(provider, model, tokens) {
     if (!pricing) return 0;
 
     let cost = 0;
-    const inputTokens = tokens.prompt_tokens || tokens.input_tokens || 0;
+    const normalizedTokens = normalizeUsageTokenObject(tokens);
+    const inputTokens = normalizedTokens.prompt_tokens || 0;
     const cachedTokens = tokens.cached_tokens || tokens.cache_read_input_tokens || 0;
     const nonCachedInput = Math.max(0, inputTokens - cachedTokens);
     cost += nonCachedInput * (pricing.input / 1000000);
@@ -344,7 +328,7 @@ async function calculateCost(provider, model, tokens) {
       cost += cachedTokens * (cachedRate / 1000000);
     }
 
-    const outputTokens = tokens.completion_tokens || tokens.output_tokens || 0;
+    const outputTokens = normalizedTokens.completion_tokens || 0;
     cost += outputTokens * (pricing.output / 1000000);
 
     const reasoningTokens = tokens.reasoning_tokens || 0;
@@ -460,11 +444,12 @@ export async function saveRequestUsage(entry) {
     const db = await getAdapter();
 
     if (!entry.timestamp) entry.timestamp = new Date().toISOString();
-    entry.cost = await calculateCost(entry.provider, entry.model, entry.tokens);
+    const tokens = normalizeUsageTokenObject(entry);
+    entry.tokens = tokens;
+    entry.cost = await calculateCost(entry.provider, entry.model, tokens);
 
-    const tokens = entry.tokens || {};
-    const promptTokens = tokens.prompt_tokens || tokens.input_tokens || 0;
-    const completionTokens = tokens.completion_tokens || tokens.output_tokens || 0;
+    const promptTokens = getPromptTokens({ ...entry, tokens });
+    const completionTokens = getCompletionTokens({ ...entry, tokens });
 
     let inserted = false;
 
@@ -1197,8 +1182,9 @@ export async function getRecentLogs(limit = 200) {
       const m = r.model || "-";
       const account = connMap[r.connectionId] || (r.connectionId ? r.connectionId.slice(0, 8) : "-");
       const tk = r.tokens ? parseJson(r.tokens, {}) : {};
-      const sent = r.promptTokens ?? tk.prompt_tokens ?? tk.input_tokens ?? "-";
-      const received = r.completionTokens ?? tk.completion_tokens ?? tk.output_tokens ?? "-";
+      const normalized = normalizeUsageTokens({ ...r, tokens: tk });
+      const sent = normalized.promptTokens;
+      const received = normalized.completionTokens;
       return `${ts} | ${m} | ${p} | ${account} | ${sent} | ${received} | ${r.status || "-"}`;
     });
   } catch (e) {

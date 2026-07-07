@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { FREE_PROVIDERS, AI_PROVIDERS } from "@/shared/constants/providers";
+import { getUsageErrorInfo } from "@/shared/utils/usageTokens";
 
 // Keep providers without serviceKinds (default LLM) or with "llm" in serviceKinds
 function isLLMProvider(id) {
@@ -84,33 +85,14 @@ function getProviderDotStyle(provider) {
   return { "--provider-hue": getProviderHue(provider) };
 }
 
-function isOkStatus(status) {
-  const value = String(status || "").trim().toLowerCase();
-  return !value || value === "ok" || value === "success";
-}
-
-function getTokenNumber(value) {
-  const n = Number(value ?? 0);
-  return Number.isFinite(n) ? n : 0;
-}
-
 function getRequestErrorInfo(request = {}) {
-  const promptTokens = getTokenNumber(request.promptTokens);
-  const completionTokens = getTokenNumber(request.completionTokens);
-  const statusError = !isOkStatus(request.status);
-  const inputZero = promptTokens <= 0;
-  const outputZero = completionTokens <= 0;
-  const reasons = [];
-
-  if (statusError) reasons.push(`status:${request.status || "unknown"}`);
-  if (inputZero) reasons.push("input=0");
-  if (outputZero) reasons.push("output=0");
+  const errorInfo = getUsageErrorInfo(request);
 
   return {
-    isError: request.isError === true || statusError || inputZero || outputZero,
-    inputZero,
-    outputZero,
-    reason: request.errorReason || reasons.join(", "),
+    isError: request.isError === true || errorInfo.isError,
+    inputZero: errorInfo.inputZero,
+    outputZero: errorInfo.outputZero,
+    reason: request.errorReason || errorInfo.reason,
   };
 }
 

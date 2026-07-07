@@ -235,9 +235,61 @@ describe("DB SQLite layer — public API parity", () => {
     });
   });
 
+  it("usage: provider-native token shapes are normalized before storage", async () => {
+    await sqliteDb.saveRequestUsage({
+      timestamp: "2026-01-02T00:00:01.000Z",
+      provider: "kiro", model: "kiro-camel-token-test", connectionId: "kiro-test",
+      tokens: { inputTokens: 18, outputTokens: 4, totalTokens: 22 },
+      endpoint: "/v1/chat/completions", status: "success",
+    });
+    await sqliteDb.saveRequestUsage({
+      timestamp: "2026-01-02T00:00:02.000Z",
+      provider: "gemini", model: "gemini-metadata-token-test", connectionId: "gemini-test",
+      tokens: {
+        usageMetadata: {
+          promptTokenCount: 30,
+          candidatesTokenCount: 0,
+          thoughtsTokenCount: 5,
+          totalTokenCount: 45,
+        },
+      },
+      endpoint: "/v1beta/models/test:generateContent", status: "200 OK",
+    });
+    await sqliteDb.saveRequestUsage({
+      timestamp: "2026-01-02T00:00:03.000Z",
+      provider: "ollama", model: "ollama-eval-token-test", connectionId: "ollama-test",
+      tokens: { prompt_eval_count: 11, eval_count: 0 },
+      endpoint: "/v1/chat/completions", status: "ok",
+    });
+
+    const stats = await sqliteDb.getUsageStats("all");
+    const rows = Object.fromEntries(
+      stats.modelProviderUsage.models
+        .filter((row) => row.model.endsWith("-token-test"))
+        .map((row) => [row.model, row])
+    );
+
+    expect(rows["kiro-camel-token-test"]).toMatchObject({
+      promptTokens: 18,
+      completionTokens: 4,
+      errorCount: 0,
+    });
+    expect(rows["gemini-metadata-token-test"]).toMatchObject({
+      promptTokens: 30,
+      completionTokens: 15,
+      errorCount: 0,
+    });
+    expect(rows["ollama-eval-token-test"]).toMatchObject({
+      promptTokens: 11,
+      completionTokens: 0,
+      errorCount: 1,
+    });
+  });
+
   it("usage: error counts include failed status and zero input/output tokens", async () => {
     const dayMs = 24 * 60 * 60 * 1000;
     const now = Date.now();
+    await sqliteDb.updateSettings({ enableObservability2: true, observabilityBatchSize: 1 });
 
     await sqliteDb.saveRequestUsage({
       timestamp: new Date(now - 1000).toISOString(),
@@ -257,6 +309,19 @@ describe("DB SQLite layer — public API parity", () => {
       tokens: { prompt_tokens: 25, completion_tokens: 0 },
       endpoint: "/v1/chat/completions", status: "ok",
     });
+    await sqliteDb.saveRequestDetail({
+      id: "kiro-zero-detail",
+      timestamp: new Date(now - 500).toISOString(),
+      provider: "kiro",
+      model: "kiro-zero-detail",
+      connectionId: "kiro-c1",
+      status: "success",
+      tokens: { prompt_tokens: 0, completion_tokens: 0 },
+      request: { method: "POST" },
+      response: { status: 200 },
+    });
+
+    await new Promise((r) => setTimeout(r, 200));
 
     const stats = await sqliteDb.getUsageStats("24h");
     const errorCounts = Object.fromEntries(stats.errorCounts.map((item) => [item.key, item]));
@@ -270,6 +335,11 @@ describe("DB SQLite layer — public API parity", () => {
     const recentZeroInput = stats.recentRequests.find((request) => request.model === "zero-input");
     expect(recentZeroInput).toMatchObject({ isError: true });
     expect(recentZeroInput.errorReason).toContain("input=0");
+
+    const recentKiroZero = stats.recentRequests.find((request) => request.model === "kiro-zero-detail");
+    expect(recentKiroZero).toMatchObject({ provider: "kiro", isError: true });
+    expect(recentKiroZero.errorReason).toContain("input=0");
+    expect(recentKiroZero.errorReason).toContain("output=0");
   });
 
   it("usage: pending tracking in-memory", () => {
