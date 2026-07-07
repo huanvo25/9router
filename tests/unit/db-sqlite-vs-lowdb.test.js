@@ -201,6 +201,40 @@ describe("DB SQLite layer — public API parity", () => {
     expect(stats.byProvider.openai.promptTokens).toBeGreaterThanOrEqual(300);
   });
 
+  it("usage: model/provider rows keep separate error rates for the same model", async () => {
+    const model = "gpt-5.5-split-test";
+    await sqliteDb.saveRequestUsage({
+      timestamp: "2026-01-01T00:00:01.000Z",
+      provider: "codex", model, connectionId: "codex-test",
+      tokens: { prompt_tokens: 100, completion_tokens: 40 },
+      endpoint: "/v1/responses", status: "ok",
+    });
+    await sqliteDb.saveRequestUsage({
+      timestamp: "2026-01-01T00:00:02.000Z",
+      provider: "codex", model, connectionId: "codex-test",
+      tokens: { prompt_tokens: 120, completion_tokens: 60 },
+      endpoint: "/v1/responses", status: "ok",
+    });
+    await sqliteDb.saveRequestUsage({
+      timestamp: "2026-01-01T00:00:03.000Z",
+      provider: "openai-compatible-vietapi-test", model, connectionId: "vietapi-test",
+      tokens: { prompt_tokens: 80, completion_tokens: 0 },
+      endpoint: "/v1/responses", status: "ok",
+    });
+
+    const stats = await sqliteDb.getUsageStats("all");
+    const rows = stats.modelProviderUsage.models.filter((row) => row.model === model);
+
+    expect(rows).toHaveLength(2);
+    const byProvider = Object.fromEntries(rows.map((row) => [row.provider, row]));
+    expect(byProvider.codex).toMatchObject({ totalRequests: 2, errorCount: 0, errorRate: 0 });
+    expect(byProvider["openai-compatible-vietapi-test"]).toMatchObject({
+      totalRequests: 1,
+      errorCount: 1,
+      errorRate: 1,
+    });
+  });
+
   it("usage: error counts include failed status and zero input/output tokens", async () => {
     const dayMs = 24 * 60 * 60 * 1000;
     const now = Date.now();

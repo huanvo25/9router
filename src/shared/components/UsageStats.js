@@ -202,9 +202,18 @@ function ModelProviderUsage({ usage, providerNameMap = {} }) {
           </thead>
           <tbody className="divide-y divide-border/50">
             {models.map((model) => (
-              <tr key={`${model.provider || "unknown"}:${model.model}`} className={(model.errorCount || 0) > 0 ? "bg-red-500/[0.025] hover:bg-red-500/[0.06]" : "hover:bg-bg-subtle"}>
-                <td className="max-w-[360px] py-2 pr-4 font-mono leading-snug text-text-main break-all" title={model.model}>
-                  {model.model}
+              <tr key={model.providerModelKey || `${model.provider || "unknown"}:${model.model}`} className={(model.errorCount || 0) > 0 ? "bg-red-500/[0.025] hover:bg-red-500/[0.06]" : "hover:bg-bg-subtle"}>
+                <td className="max-w-[360px] py-2 pr-4 leading-snug text-text-main" title={`${model.model} · ${model.providerName || model.provider || "-"}`}>
+                  <div className="break-all font-mono">{model.model}</div>
+                  <div className="mt-1 flex min-w-0 items-center gap-1.5">
+                    <span className="text-[10px] font-semibold uppercase text-text-muted">Provider</span>
+                    <ProviderBadge
+                      provider={model.provider}
+                      label={model.providerName || getProviderLabel(model.provider, providerNameMap)}
+                      isError={(model.errorCount || 0) > 0}
+                      maxWidthClass="max-w-[190px]"
+                    />
+                  </div>
                 </td>
                 <td className="py-2 pr-4 text-right font-mono text-text-main">{fmt(model.totalRequests || 0)}</td>
                 <td className="py-2 pr-4">

@@ -29,6 +29,10 @@ const BUILTIN_PROVIDER_NAMES = {
   nvidia: "NVIDIA",
   "cloudflare-ai": "Cloudflare AI",
 };
+const LEGACY_COMPATIBLE_PROVIDER_NAMES = {
+  "openai-compatible-49bbe6c1-5692-4933-a2ab-346474fe7089": "VietAPI",
+  "openai-compatible-responses-49bbe6c1-5692-4933-a2ab-346474fe7089": "VietAPI",
+};
 
 // In-memory state shared across Next.js modules
 if (!global._pendingRequests) global._pendingRequests = { byModel: {}, byAccount: {} };
@@ -175,11 +179,18 @@ function getProviderDisplayName(provider, providerNameMap = {}, connectionMeta =
 }
 
 function buildProviderLookups(connections = [], providerNodes = []) {
-  const providerNameMap = { ...BUILTIN_PROVIDER_NAMES };
+  const providerNameMap = { ...BUILTIN_PROVIDER_NAMES, ...LEGACY_COMPATIBLE_PROVIDER_NAMES };
   const connectionProviderMap = {};
 
   for (const node of providerNodes || []) {
-    if (node?.id && node?.name) providerNameMap[node.id] = node.name;
+    if (node?.id && node?.name) {
+      providerNameMap[node.id] = node.name;
+      if (node.id.startsWith("openai-compatible-responses-")) {
+        providerNameMap[node.id.replace(/^openai-compatible-responses-/, "openai-compatible-")] = node.name;
+      } else if (node.id.startsWith("openai-compatible-")) {
+        providerNameMap[node.id.replace(/^openai-compatible-/, "openai-compatible-responses-")] = node.name;
+      }
+    }
     if (node?.prefix && node?.name) providerNameMap[node.prefix] = node.name;
   }
 
@@ -193,6 +204,13 @@ function buildProviderLookups(connections = [], providerNodes = []) {
       || provider;
 
     if (!providerNameMap[provider]) providerNameMap[provider] = providerName;
+    if (provider.startsWith("openai-compatible-responses-")) {
+      const chatProvider = provider.replace(/^openai-compatible-responses-/, "openai-compatible-");
+      if (!providerNameMap[chatProvider]) providerNameMap[chatProvider] = providerName;
+    } else if (provider.startsWith("openai-compatible-")) {
+      const responsesProvider = provider.replace(/^openai-compatible-/, "openai-compatible-responses-");
+      if (!providerNameMap[responsesProvider]) providerNameMap[responsesProvider] = providerName;
+    }
     if (connection?.id) {
       connectionProviderMap[connection.id] = {
         provider,
@@ -621,6 +639,7 @@ function getUsageErrorCounts(db, providerLookups = {}) {
 
 function createModelProviderRow(model, provider, providerName) {
   return {
+    providerModelKey: `${provider}\u0000${model}`,
     model,
     provider,
     providerName,
