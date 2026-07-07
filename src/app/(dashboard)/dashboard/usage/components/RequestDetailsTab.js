@@ -96,6 +96,7 @@ function getDetailErrorInfo(detail = {}) {
   const labels = [];
 
   if (errorInfo.statusError) labels.push("Lỗi trạng thái");
+  if (errorInfo.payloadError) labels.push("Body lỗi");
   if (errorInfo.inputZero) labels.push("Input = 0");
   if (errorInfo.outputZero) labels.push("Output = 0");
 

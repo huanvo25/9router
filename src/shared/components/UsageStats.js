@@ -101,6 +101,7 @@ function getErrorLabel(errorInfo) {
   const labels = [];
   const reason = errorInfo.reason || "";
   if (reason.includes("status:")) labels.push("Lỗi trạng thái");
+  if (reason.includes("response_error")) labels.push("Body lỗi");
   if (errorInfo.inputZero || reason.includes("input=0")) labels.push("Input = 0");
   if (errorInfo.outputZero || reason.includes("output=0")) labels.push("Output = 0");
   return labels.length ? labels.join(" · ") : "Có lỗi";

@@ -234,6 +234,15 @@ function toRecentRequest(entry, providerLookups = {}) {
   };
 }
 
+function getUsageEventKey(entry = {}) {
+  return [
+    entry.timestamp || "",
+    normalizeProviderKey(entry.provider),
+    entry.connectionId || "",
+    entry.model || "",
+  ].join("\u0000");
+}
+
 function dedupeRecentRequests(entries, limit = RECENT_REQUEST_LIMIT) {
   const seen = new Set();
   return entries
@@ -250,22 +259,63 @@ function dedupeRecentRequests(entries, limit = RECENT_REQUEST_LIMIT) {
     .slice(0, limit);
 }
 
-function getRecentErrorDetailRequests(db, limit = 50, providerLookups = {}) {
+function toRequestDetailUsageEntry(detail = {}, providerLookups = {}) {
+  const error = getUsageError(detail);
+  const { provider, providerName } = resolveUsageProvider(detail, providerLookups);
+  return {
+    timestamp: detail.timestamp,
+    model: detail.model,
+    provider,
+    providerName,
+    connectionId: detail.connectionId,
+    promptTokens: error.promptTokens,
+    completionTokens: error.completionTokens,
+    cost: 0,
+    status: detail.status || detail.response?.status || detail.providerResponse?.status || "unknown",
+    tokens: normalizeUsageTokenObject(detail),
+    isError: error.isError,
+    errorReason: error.reason,
+    _usageError: error,
+    _source: "requestDetails",
+  };
+}
+
+function getErrorDetailUsageEntries(db, options = {}, providerLookups = {}) {
   try {
-    const scanLimit = Math.max(limit * 4, 200);
+    const { start = null, end = null, limit = null, excludeKeys = null } = options;
+    const where = [];
+    const params = [];
+    if (start != null) {
+      where.push("timestamp >= ?");
+      params.push(new Date(start).toISOString());
+    }
+    if (end != null) {
+      where.push("timestamp <= ?");
+      params.push(new Date(end).toISOString());
+    }
+    const limitSql = limit ? "LIMIT ?" : "";
+    if (limit) params.push(limit);
     const rows = db.all(
       `SELECT data FROM requestDetails
+       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
        ORDER BY timestamp DESC
-       LIMIT ?`,
-      [scanLimit]
+       ${limitSql}`,
+      params
     );
     return rows
-      .map((r) => toRecentRequest(parseJson(r.data, {}) || {}, providerLookups))
-      .filter((request) => request.isError)
-      .slice(0, limit);
+      .map((r) => toRequestDetailUsageEntry(parseJson(r.data, {}) || {}, providerLookups))
+      .filter((entry) => entry.isError)
+      .filter((entry) => !excludeKeys?.has(getUsageEventKey(entry)));
   } catch {
     return [];
   }
+}
+
+function getRecentErrorDetailRequests(db, limit = 50, providerLookups = {}) {
+  const scanLimit = Math.max(limit * 4, 200);
+  return getErrorDetailUsageEntries(db, { limit: scanLimit }, providerLookups)
+    .map((entry) => toRecentRequest(entry, providerLookups))
+    .slice(0, limit);
 }
 
 async function getConnectionDataCached() {
@@ -583,13 +633,19 @@ function getUsageErrorCounts(db, providerLookups = {}) {
      FROM usageHistory
      WHERE timestamp >= ?`,
     [new Date(earliest).toISOString()]
+  ).map((row) => ({ ...row, tokens: parseJson(row.tokens, {}) || {} }));
+  const seenUsageKeys = new Set(rows.map(getUsageEventKey));
+  const detailErrorRows = getErrorDetailUsageEntries(
+    db,
+    { start: earliest, excludeKeys: seenUsageKeys },
+    providerLookups
   );
 
-  for (const row of rows) {
+  for (const row of [...rows, ...detailErrorRows]) {
     const ts = new Date(row.timestamp).getTime();
     if (!Number.isFinite(ts)) continue;
 
-    const error = getUsageError({ ...row, tokens: parseJson(row.tokens, {}) || {} });
+    const error = row._usageError || getUsageError(row);
     if (!error.isError) continue;
 
     const { provider, providerName } = resolveUsageProvider(row, providerLookups);
@@ -676,13 +732,20 @@ function getModelProviderUsage(db, period = "all", providerLookups = {}) {
     params.push(new Date(start).toISOString());
   }
 
-  const rows = db.all(
+  const usageRows = db.all(
     `SELECT timestamp, provider, model, connectionId, promptTokens, completionTokens, cost, status, tokens
      FROM usageHistory
      ${where}
      ORDER BY timestamp DESC`,
     params
+  ).map((row) => ({ ...row, tokens: parseJson(row.tokens, {}) || {} }));
+  const seenUsageKeys = new Set(usageRows.map(getUsageEventKey));
+  const detailErrorRows = getErrorDetailUsageEntries(
+    db,
+    { start, excludeKeys: seenUsageKeys },
+    providerLookups
   );
+  const rows = [...usageRows, ...detailErrorRows];
   const modelProviderMap = {};
   const providerTotals = {};
   const modelSet = new Set();
@@ -691,12 +754,11 @@ function getModelProviderUsage(db, period = "all", providerLookups = {}) {
     const model = row.model || "Unknown Model";
     const { provider, providerName } = resolveUsageProvider(row, providerLookups);
     const modelProviderKey = `${provider}\u0000${model}`;
-    const tokens = parseJson(row.tokens, {}) || {};
-    const promptTokens = getPromptTokens({ ...row, tokens });
-    const completionTokens = getCompletionTokens({ ...row, tokens });
+    const promptTokens = getPromptTokens(row);
+    const completionTokens = getCompletionTokens(row);
     const totalTokens = promptTokens + completionTokens;
     const cost = row.cost || 0;
-    const error = getUsageError({ ...row, tokens });
+    const error = row._usageError || getUsageError(row);
 
     modelSet.add(model);
     if (!modelProviderMap[modelProviderKey]) {

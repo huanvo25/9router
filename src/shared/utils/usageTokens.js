@@ -11,6 +11,29 @@ function maxToken(...values) {
   return Math.max(0, ...values.map(numericToken));
 }
 
+function hasValue(value) {
+  if (value === undefined || value === null || value === false) return false;
+  if (typeof value === "string") return value.trim() !== "";
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return Boolean(value);
+}
+
+function getErrorPayload(source = {}) {
+  const candidates = [
+    source.error,
+    source.error_message,
+    source.errorMessage,
+    source.response?.error,
+    source.response?.error_message,
+    source.response?.errorMessage,
+    source.providerResponse?.error,
+    source.providerResponse?.error_message,
+    source.providerResponse?.errorMessage,
+  ];
+  return candidates.find(hasValue);
+}
+
 function getRawTokens(source = {}) {
   if (isObject(source.tokens)) return source.tokens;
   return isObject(source) ? source : {};
@@ -150,19 +173,30 @@ export function isUsageOkStatus(status) {
 
 export function getUsageErrorInfo(source = {}) {
   const tokens = normalizeUsageTokens(source);
-  const statusError = !isUsageOkStatus(source.status);
+  const statusValues = [
+    source.status,
+    source.statusCode,
+    source.httpStatus,
+    source.response?.status,
+    source.providerResponse?.status
+  ].filter((value) => value !== undefined && value !== null && value !== "");
+  const status = statusValues.find((value) => !isUsageOkStatus(value)) || statusValues[0];
+  const payloadError = hasValue(getErrorPayload(source));
+  const statusError = statusValues.some((value) => !isUsageOkStatus(value));
   const inputZero = tokens.promptTokens <= 0;
   const outputZero = tokens.completionTokens <= 0;
   const reasons = [];
 
-  if (statusError) reasons.push(`status:${source.status || "unknown"}`);
+  if (statusError) reasons.push(`status:${status || "unknown"}`);
+  if (payloadError) reasons.push("response_error");
   if (inputZero) reasons.push("input=0");
   if (outputZero) reasons.push("output=0");
 
   return {
     ...tokens,
-    isError: statusError || inputZero || outputZero,
+    isError: statusError || payloadError || inputZero || outputZero,
     statusError,
+    payloadError,
     zeroTokenError: inputZero || outputZero,
     inputZero,
     outputZero,

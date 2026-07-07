@@ -85,4 +85,24 @@ describe("usage token normalization", () => {
       reason: "output=0",
     });
   });
+
+  it("flags structured response errors even when top-level status is success", () => {
+    const info = getUsageErrorInfo({
+      status: "success",
+      response: {
+        status: 429,
+        error: { message: "Too many requests" },
+      },
+      tokens: { inputTokens: 20, outputTokens: 5 },
+    });
+
+    expect(info).toMatchObject({
+      isError: true,
+      statusError: true,
+      payloadError: true,
+      zeroTokenError: false,
+    });
+    expect(info.reason).toContain("status:429");
+    expect(info.reason).toContain("response_error");
+  });
 });

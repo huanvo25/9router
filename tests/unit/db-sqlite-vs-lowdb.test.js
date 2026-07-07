@@ -340,6 +340,22 @@ describe("DB SQLite layer — public API parity", () => {
     expect(recentKiroZero).toMatchObject({ provider: "kiro", isError: true });
     expect(recentKiroZero.errorReason).toContain("input=0");
     expect(recentKiroZero.errorReason).toContain("output=0");
+
+    const kiroModelRow = stats.modelProviderUsage.models.find(
+      (row) => row.provider === "kiro" && row.model === "kiro-zero-detail"
+    );
+    expect(kiroModelRow).toMatchObject({
+      totalRequests: 1,
+      errorCount: 1,
+      zeroTokenCount: 1,
+      errorRate: 1,
+    });
+
+    const kiroErrorProvider = errorCounts["24h"].providers.find((provider) => provider.provider === "kiro");
+    expect(kiroErrorProvider).toMatchObject({
+      count: 1,
+      zeroTokenCount: 1,
+    });
   });
 
   it("usage: pending tracking in-memory", () => {
