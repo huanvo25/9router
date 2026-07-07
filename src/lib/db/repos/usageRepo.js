@@ -16,6 +16,19 @@ const RING_CAP = 120;
 const CONN_CACHE_TTL_MS = 30 * 1000;
 const DAY_MS = 86400000;
 const PERIOD_MS = { "24h": DAY_MS, "7d": 7 * DAY_MS, "30d": 30 * DAY_MS, "60d": 60 * DAY_MS, "1y": 365 * DAY_MS };
+const GENERIC_PROVIDER_IDS = new Set(["openai-compatible", "anthropic-compatible", "custom-embedding"]);
+const BUILTIN_PROVIDER_NAMES = {
+  openai: "OpenAI",
+  codex: "OpenAI Codex",
+  kiro: "Kiro",
+  opencode: "OpenCode",
+  antigravity: "Antigravity",
+  openrouter: "OpenRouter",
+  ollama: "Ollama",
+  "ollama-local": "Ollama Local",
+  nvidia: "NVIDIA",
+  "cloudflare-ai": "Cloudflare AI",
+};
 
 // In-memory state shared across Next.js modules
 if (!global._pendingRequests) global._pendingRequests = { byModel: {}, byAccount: {} };
@@ -26,7 +39,7 @@ if (!global._statsEmitter) {
 }
 if (!global._pendingTimers) global._pendingTimers = {};
 if (!global._recentRing) global._recentRing = { items: [], initialized: false };
-if (!global._connectionMapCache) global._connectionMapCache = { map: {}, ts: 0 };
+if (!global._connectionMapCache) global._connectionMapCache = { map: {}, accountNameMap: {}, providerLookups: null, ts: 0 };
 if (!global._statsEmitTimers) global._statsEmitTimers = { pending: null, update: null };
 
 const pendingRequests = global._pendingRequests;
@@ -146,12 +159,75 @@ function isZeroTokenRequest(entry) {
   return error.zeroTokenError;
 }
 
-function toRecentRequest(entry) {
+function normalizeProviderKey(provider) {
+  if (typeof provider !== "string") return "unknown";
+  const trimmed = provider.trim();
+  return trimmed || "unknown";
+}
+
+function isGenericUsageProvider(provider) {
+  return GENERIC_PROVIDER_IDS.has(normalizeProviderKey(provider));
+}
+
+function getProviderDisplayName(provider, providerNameMap = {}, connectionMeta = null) {
+  const normalized = normalizeProviderKey(provider);
+  return providerNameMap[normalized] || connectionMeta?.providerName || normalized;
+}
+
+function buildProviderLookups(connections = [], providerNodes = []) {
+  const providerNameMap = { ...BUILTIN_PROVIDER_NAMES };
+  const connectionProviderMap = {};
+
+  for (const node of providerNodes || []) {
+    if (node?.id && node?.name) providerNameMap[node.id] = node.name;
+    if (node?.prefix && node?.name) providerNameMap[node.prefix] = node.name;
+  }
+
+  for (const connection of connections || []) {
+    const provider = normalizeProviderKey(connection?.provider);
+    const providerName = providerNameMap[provider]
+      || connection?.providerSpecificData?.nodeName
+      || connection?.displayName
+      || connection?.name
+      || connection?.email
+      || provider;
+
+    if (!providerNameMap[provider]) providerNameMap[provider] = providerName;
+    if (connection?.id) {
+      connectionProviderMap[connection.id] = {
+        provider,
+        providerName: getProviderDisplayName(provider, providerNameMap, { providerName }),
+      };
+    }
+  }
+
+  return { providerNameMap, connectionProviderMap };
+}
+
+function resolveUsageProvider(entry = {}, providerLookups = {}) {
+  const connectionMeta = entry.connectionId
+    ? providerLookups.connectionProviderMap?.[entry.connectionId]
+    : null;
+  let provider = normalizeProviderKey(entry.provider);
+
+  if (connectionMeta?.provider && (provider === "unknown" || isGenericUsageProvider(provider))) {
+    provider = connectionMeta.provider;
+  }
+
+  return {
+    provider,
+    providerName: getProviderDisplayName(provider, providerLookups.providerNameMap || {}, connectionMeta),
+  };
+}
+
+function toRecentRequest(entry, providerLookups = {}) {
   const error = getUsageError(entry);
+  const { provider, providerName } = resolveUsageProvider(entry, providerLookups);
   return {
     timestamp: entry.timestamp,
     model: entry.model,
-    provider: entry.provider || "",
+    provider,
+    providerName,
     promptTokens: error.promptTokens,
     completionTokens: error.completionTokens,
     status: entry.status || "ok",
@@ -176,7 +252,7 @@ function dedupeRecentRequests(entries, limit = RECENT_REQUEST_LIMIT) {
     .slice(0, limit);
 }
 
-function getRecentErrorDetailRequests(db, limit = 50) {
+function getRecentErrorDetailRequests(db, limit = 50, providerLookups = {}) {
   try {
     const rows = db.all(
       `SELECT data FROM requestDetails
@@ -185,23 +261,37 @@ function getRecentErrorDetailRequests(db, limit = 50) {
        LIMIT ?`,
       [limit]
     );
-    return rows.map((r) => toRecentRequest(parseJson(r.data, {}) || {}));
+    return rows.map((r) => toRecentRequest(parseJson(r.data, {}) || {}, providerLookups));
   } catch {
     return [];
   }
 }
 
-async function getConnectionMapCached() {
-  if (Date.now() - connCache.ts < CONN_CACHE_TTL_MS) return connCache.map;
+async function getConnectionDataCached() {
+  if (Date.now() - connCache.ts < CONN_CACHE_TTL_MS && connCache.accountNameMap && connCache.providerLookups) {
+    return {
+      accountNameMap: connCache.accountNameMap,
+      providerLookups: connCache.providerLookups,
+    };
+  }
+
   try {
     const { getProviderConnections } = await import("./connectionsRepo.js");
+    const { getProviderNodes } = await import("./nodesRepo.js");
     const all = await getProviderConnections();
-    const map = {};
-    for (const c of all) map[c.id] = c.name || c.email || c.id;
-    connCache.map = map;
+    const nodes = await getProviderNodes();
+    const accountNameMap = {};
+    for (const c of all) accountNameMap[c.id] = c.name || c.email || c.id;
+    connCache.map = accountNameMap;
+    connCache.accountNameMap = accountNameMap;
+    connCache.providerLookups = buildProviderLookups(all, nodes);
     connCache.ts = Date.now();
   } catch {}
-  return connCache.map;
+
+  return {
+    accountNameMap: connCache.accountNameMap || connCache.map || {},
+    providerLookups: connCache.providerLookups || buildProviderLookups(),
+  };
 }
 
 async function ensureRingInitialized() {
@@ -305,7 +395,7 @@ export function trackPendingRequest(model, provider, connectionId, started, erro
 
 export async function getActiveRequests() {
   const activeRequests = [];
-  const connectionMap = await getConnectionMapCached();
+  const { accountNameMap: connectionMap, providerLookups } = await getConnectionDataCached();
   const accountedByModel = {};
 
   for (const [connectionId, models] of Object.entries(pendingRequests.byAccount)) {
@@ -339,8 +429,8 @@ export async function getActiveRequests() {
   await ensureRingInitialized();
   const db = await getAdapter();
   const recentRequests = dedupeRecentRequests([
-    ...recentRing.items.map(toRecentRequest),
-    ...getRecentErrorDetailRequests(db, RECENT_REQUEST_LIMIT),
+    ...recentRing.items.map((entry) => toRecentRequest(entry, providerLookups)),
+    ...getRecentErrorDetailRequests(db, RECENT_REQUEST_LIMIT, providerLookups),
   ]);
 
   const errorProvider = (Date.now() - lastErrorProvider.ts < 10000) ? lastErrorProvider.provider : "";
@@ -475,7 +565,7 @@ function getErrorRanges(now = new Date()) {
   ];
 }
 
-function getUsageErrorCounts(db) {
+function getUsageErrorCounts(db, providerLookups = {}) {
   const now = new Date();
   const ranges = getErrorRanges(now).map((range) => ({
     ...range,
@@ -486,7 +576,7 @@ function getUsageErrorCounts(db) {
   }));
   const earliest = Math.min(...ranges.map((r) => r.start));
   const rows = db.all(
-    `SELECT timestamp, provider, model, promptTokens, completionTokens, status, tokens
+    `SELECT timestamp, provider, model, connectionId, promptTokens, completionTokens, status, tokens
      FROM usageHistory
      WHERE timestamp >= ?`,
     [new Date(earliest).toISOString()]
@@ -499,7 +589,7 @@ function getUsageErrorCounts(db) {
     const error = getUsageError({ ...row, tokens: parseJson(row.tokens, {}) || {} });
     if (!error.isError) continue;
 
-    const provider = row.provider || "unknown";
+    const { provider, providerName } = resolveUsageProvider(row, providerLookups);
     for (const range of ranges) {
       if (ts < range.start || ts > now.getTime()) continue;
 
@@ -507,7 +597,13 @@ function getUsageErrorCounts(db) {
       if (error.statusError) range.statusErrorCount += 1;
       if (error.zeroTokenError) range.zeroTokenCount += 1;
       if (!range.providers[provider]) {
-        range.providers[provider] = { provider, count: 0, statusErrorCount: 0, zeroTokenCount: 0 };
+        range.providers[provider] = {
+          provider,
+          providerName,
+          count: 0,
+          statusErrorCount: 0,
+          zeroTokenCount: 0,
+        };
       }
       range.providers[provider].count += 1;
       if (error.statusError) range.providers[provider].statusErrorCount += 1;
@@ -523,9 +619,11 @@ function getUsageErrorCounts(db) {
   }));
 }
 
-function createModelProviderRow(model) {
+function createModelProviderRow(model, provider, providerName) {
   return {
     model,
+    provider,
+    providerName,
     totalRequests: 0,
     promptTokens: 0,
     completionTokens: 0,
@@ -540,9 +638,10 @@ function createModelProviderRow(model) {
   };
 }
 
-function createProviderUsageRow(provider) {
+function createProviderUsageRow(provider, providerName) {
   return {
     provider,
+    providerName,
     requests: 0,
     promptTokens: 0,
     completionTokens: 0,
@@ -563,7 +662,7 @@ function withErrorRate(row) {
   };
 }
 
-function getModelProviderUsage(db, period = "all") {
+function getModelProviderUsage(db, period = "all", providerLookups = {}) {
   const now = new Date();
   const start = getPeriodStart(period, now);
   const params = [];
@@ -574,18 +673,20 @@ function getModelProviderUsage(db, period = "all") {
   }
 
   const rows = db.all(
-    `SELECT timestamp, provider, model, promptTokens, completionTokens, cost, status, tokens
+    `SELECT timestamp, provider, model, connectionId, promptTokens, completionTokens, cost, status, tokens
      FROM usageHistory
      ${where}
      ORDER BY timestamp DESC`,
     params
   );
-  const modelMap = {};
+  const modelProviderMap = {};
   const providerTotals = {};
+  const modelSet = new Set();
 
   for (const row of rows) {
     const model = row.model || "Unknown Model";
-    const provider = row.provider || "unknown";
+    const { provider, providerName } = resolveUsageProvider(row, providerLookups);
+    const modelProviderKey = `${provider}\u0000${model}`;
     const tokens = parseJson(row.tokens, {}) || {};
     const promptTokens = getPromptTokens({ ...row, tokens });
     const completionTokens = getCompletionTokens({ ...row, tokens });
@@ -593,11 +694,16 @@ function getModelProviderUsage(db, period = "all") {
     const cost = row.cost || 0;
     const error = getUsageError({ ...row, tokens });
 
-    if (!modelMap[model]) modelMap[model] = createModelProviderRow(model);
-    if (!modelMap[model].providers[provider]) modelMap[model].providers[provider] = createProviderUsageRow(provider);
-    if (!providerTotals[provider]) providerTotals[provider] = createProviderUsageRow(provider);
+    modelSet.add(model);
+    if (!modelProviderMap[modelProviderKey]) {
+      modelProviderMap[modelProviderKey] = createModelProviderRow(model, provider, providerName);
+    }
+    if (!modelProviderMap[modelProviderKey].providers[provider]) {
+      modelProviderMap[modelProviderKey].providers[provider] = createProviderUsageRow(provider, providerName);
+    }
+    if (!providerTotals[provider]) providerTotals[provider] = createProviderUsageRow(provider, providerName);
 
-    const modelRow = modelMap[model];
+    const modelRow = modelProviderMap[modelProviderKey];
     const providerRow = modelRow.providers[provider];
     const providerTotal = providerTotals[provider];
     for (const target of [modelRow, providerRow, providerTotal]) {
@@ -616,7 +722,7 @@ function getModelProviderUsage(db, period = "all") {
     }
   }
 
-  const models = Object.values(modelMap)
+  const models = Object.values(modelProviderMap)
     .map((modelRow) => {
       const providers = Object.values(modelRow.providers)
         .map(withErrorRate)
@@ -627,7 +733,7 @@ function getModelProviderUsage(db, period = "all") {
         providers,
       });
     })
-    .sort((a, b) => b.totalRequests - a.totalRequests || a.model.localeCompare(b.model))
+    .sort((a, b) => b.totalRequests - a.totalRequests || a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model))
     .slice(0, 80);
 
   const topProviders = Object.values(providerTotals)
@@ -636,11 +742,12 @@ function getModelProviderUsage(db, period = "all") {
     .slice(0, 12);
 
   const totalRequests = rows.length;
-  const totalErrors = Object.values(modelMap).reduce((sum, row) => sum + (row.errorCount || 0), 0);
+  const totalErrors = Object.values(modelProviderMap).reduce((sum, row) => sum + (row.errorCount || 0), 0);
 
   return {
     period,
-    totalModels: Object.keys(modelMap).length,
+    totalModels: modelSet.size,
+    totalModelProviderRows: Object.keys(modelProviderMap).length,
     totalProviders: Object.keys(providerTotals).length,
     totalRequests,
     totalErrors,
@@ -664,11 +771,13 @@ export async function getUsageStats(period = "all") {
   const connectionMap = {};
   for (const c of allConnections) connectionMap[c.id] = c.name || c.email || c.id;
 
-  const providerNodeNameMap = {};
+  const providerNodes = [];
   try {
     const nodes = await getProviderNodes();
-    for (const n of nodes) if (n.id && n.name) providerNodeNameMap[n.id] = n.name;
+    providerNodes.push(...nodes);
   } catch {}
+  const providerLookups = buildProviderLookups(allConnections, providerNodes);
+  const providerNameMap = providerLookups.providerNameMap || {};
 
   let allApiKeys = [];
   try { allApiKeys = await getApiKeys(); } catch {}
@@ -676,12 +785,12 @@ export async function getUsageStats(period = "all") {
   for (const k of allApiKeys) apiKeyMap[k.key] = { name: k.name, id: k.id, createdAt: k.createdAt };
 
   const recentRows = db.all(
-    `SELECT timestamp, provider, model, promptTokens, completionTokens, tokens, status FROM usageHistory ORDER BY id DESC LIMIT ?`,
+    `SELECT timestamp, provider, model, connectionId, promptTokens, completionTokens, tokens, status FROM usageHistory ORDER BY id DESC LIMIT ?`,
     [RECENT_HISTORY_SCAN_LIMIT]
   );
   const recentRequests = dedupeRecentRequests([
-    ...recentRows.map((r) => toRecentRequest({ ...r, tokens: parseJson(r.tokens, {}) || {} })),
-    ...getRecentErrorDetailRequests(db, RECENT_REQUEST_LIMIT),
+    ...recentRows.map((r) => toRecentRequest({ ...r, tokens: parseJson(r.tokens, {}) || {} }, providerLookups)),
+    ...getRecentErrorDetailRequests(db, RECENT_REQUEST_LIMIT, providerLookups),
   ]);
 
   const stats = {
@@ -692,8 +801,8 @@ export async function getUsageStats(period = "all") {
     pending: pendingRequests,
     activeRequests: [],
     recentRequests,
-    errorCounts: getUsageErrorCounts(db),
-    modelProviderUsage: getModelProviderUsage(db, period),
+    errorCounts: getUsageErrorCounts(db, providerLookups),
+    modelProviderUsage: getModelProviderUsage(db, period, providerLookups),
     errorProvider: (Date.now() - lastErrorProvider.ts < 10000) ? lastErrorProvider.provider : "",
   };
 
@@ -763,7 +872,7 @@ export async function getUsageStats(period = "all") {
         const rawModel = m.rawModel || mk.split("|")[0];
         const provider = m.provider || mk.split("|")[1] || "";
         const statsKey = provider ? `${rawModel} (${provider})` : rawModel;
-        const providerDisplayName = providerNodeNameMap[provider] || provider;
+        const providerDisplayName = getProviderDisplayName(provider, providerNameMap);
         if (!stats.byModel[statsKey]) {
           stats.byModel[statsKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cost: 0, rawModel, provider: providerDisplayName, lastUsed: dateKey };
         }
@@ -778,7 +887,7 @@ export async function getUsageStats(period = "all") {
         const accountName = connectionMap[connId] || `Account ${connId.slice(0, 8)}...`;
         const rawModel = a.rawModel || "";
         const provider = a.provider || "";
-        const providerDisplayName = providerNodeNameMap[provider] || provider;
+        const providerDisplayName = getProviderDisplayName(provider, providerNameMap);
         const accountKey = `${rawModel} (${provider} - ${accountName})`;
         if (!stats.byAccount[accountKey]) {
           stats.byAccount[accountKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cost: 0, rawModel, provider: providerDisplayName, connectionId: connId, accountName, lastUsed: dateKey };
@@ -793,7 +902,7 @@ export async function getUsageStats(period = "all") {
       for (const [akKey, ak] of Object.entries(day.byApiKey || {})) {
         const rawModel = ak.rawModel || "";
         const provider = ak.provider || "";
-        const providerDisplayName = providerNodeNameMap[provider] || provider;
+        const providerDisplayName = getProviderDisplayName(provider, providerNameMap);
         const apiKeyVal = ak.apiKey;
         const keyInfo = apiKeyVal ? apiKeyMap[apiKeyVal] : null;
         const keyName = keyInfo?.name || (apiKeyVal ? apiKeyVal.slice(0, 8) + "..." : "Local (No API Key)");
@@ -813,7 +922,7 @@ export async function getUsageStats(period = "all") {
         const endpoint = ep.endpoint || epKey.split("|")[0] || "Unknown";
         const rawModel = ep.rawModel || "";
         const provider = ep.provider || "";
-        const providerDisplayName = providerNodeNameMap[provider] || provider;
+        const providerDisplayName = getProviderDisplayName(provider, providerNameMap);
         if (!stats.byEndpoint[epKey]) {
           stats.byEndpoint[epKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cost: 0, endpoint, rawModel, provider: providerDisplayName, lastUsed: dateKey };
         }
@@ -871,7 +980,7 @@ export async function getUsageStats(period = "all") {
       const promptTokens = getPromptTokens({ ...r, tokens });
       const completionTokens = getCompletionTokens({ ...r, tokens });
       const entryCost = r.cost || 0;
-      const providerDisplayName = providerNodeNameMap[r.provider] || r.provider;
+      const providerDisplayName = getProviderDisplayName(r.provider, providerNameMap);
 
       stats.totalPromptTokens += promptTokens;
       stats.totalCompletionTokens += completionTokens;

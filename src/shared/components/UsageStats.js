@@ -17,7 +17,10 @@ import UsageTable, { fmt, fmtTime } from "@/app/(dashboard)/dashboard/usage/comp
 import UsageChart from "@/app/(dashboard)/dashboard/usage/components/UsageChart";
 
 function timeAgo(timestamp) {
-  const diff = Math.floor((Date.now() - new Date(timestamp)) / 1000);
+  if (!timestamp) return "Never";
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "Never";
+  const diff = Math.floor((Date.now() - date) / 1000);
   if (diff < 60) return `${diff}s ago`;
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
@@ -52,9 +55,9 @@ function TimeAgo({ timestamp }) {
   return <>{timeAgo(timestamp)}</>;
 }
 
-function getProviderLabel(providerId, providerNameMap = {}) {
+function getProviderLabel(providerId, providerNameMap = {}, fallbackName = null) {
   if (!providerId) return "-";
-  return providerNameMap[providerId] || AI_PROVIDERS[providerId]?.name || providerId;
+  return fallbackName || providerNameMap[providerId] || AI_PROVIDERS[providerId]?.name || providerId;
 }
 
 const PROVIDER_HUES = [205, 158, 266, 36, 187, 82, 232, 318, 28, 174, 48, 286];
@@ -168,7 +171,7 @@ function ModelProviderUsage({ usage, providerNameMap = {} }) {
         </div>
         <div className="flex flex-wrap gap-2">
           {topProviders.slice(0, 8).map((provider) => {
-            const label = getProviderLabel(provider.provider, providerNameMap);
+            const label = getProviderLabel(provider.provider, providerNameMap, provider.providerName);
             return (
               <div key={provider.provider} className="flex items-center gap-1.5 rounded-md border border-border bg-bg-subtle px-2 py-1">
                 <ProviderBadge provider={provider.provider} label={label} maxWidthClass="max-w-[140px]" />
@@ -190,7 +193,7 @@ function ModelProviderUsage({ usage, providerNameMap = {} }) {
             <tr className="border-b border-border">
               <th className="py-2 pr-4 text-left font-semibold text-text-muted">Model</th>
               <th className="py-2 pr-4 text-right font-semibold text-text-muted">Requests</th>
-              <th className="py-2 pr-4 text-left font-semibold text-text-muted">Providers</th>
+              <th className="py-2 pr-4 text-left font-semibold text-text-muted">Provider</th>
               <th className="py-2 pr-4 text-right font-semibold text-text-muted">In / Out</th>
               <th className="py-2 pr-4 text-right font-semibold text-text-muted">Lỗi</th>
               <th className="py-2 pr-4 text-right font-semibold text-text-muted">% lỗi</th>
@@ -199,7 +202,7 @@ function ModelProviderUsage({ usage, providerNameMap = {} }) {
           </thead>
           <tbody className="divide-y divide-border/50">
             {models.map((model) => (
-              <tr key={model.model} className={(model.errorCount || 0) > 0 ? "bg-red-500/[0.025] hover:bg-red-500/[0.06]" : "hover:bg-bg-subtle"}>
+              <tr key={`${model.provider || "unknown"}:${model.model}`} className={(model.errorCount || 0) > 0 ? "bg-red-500/[0.025] hover:bg-red-500/[0.06]" : "hover:bg-bg-subtle"}>
                 <td className="max-w-[360px] py-2 pr-4 font-mono leading-snug text-text-main break-all" title={model.model}>
                   {model.model}
                 </td>
@@ -207,7 +210,7 @@ function ModelProviderUsage({ usage, providerNameMap = {} }) {
                 <td className="py-2 pr-4">
                   <div className="flex max-w-[520px] flex-wrap gap-1.5">
                     {(model.providers || []).slice(0, 8).map((provider) => {
-                      const label = getProviderLabel(provider.provider, providerNameMap);
+                      const label = getProviderLabel(provider.provider, providerNameMap, provider.providerName || model.providerName);
                       const chipLabel = `${label} ${fmt(provider.requests || 0)}`;
                       const title = `${label}: ${fmt(provider.requests || 0)} requests · ${fmt(provider.totalTokens || 0)} tokens · ${fmt(provider.errorCount || 0)} lỗi · ${formatErrorRate(provider.errorRate)}`;
                       return (
@@ -247,7 +250,9 @@ function ModelProviderUsage({ usage, providerNameMap = {} }) {
                     {formatErrorRate(model.errorRate)}
                   </span>
                 </td>
-                <td className="py-2 text-right text-text-muted whitespace-nowrap">{fmtTime(model.lastUsed)}</td>
+                <td className="py-2 text-right text-text-muted whitespace-nowrap" title={formatRequestTime(model.lastUsed)}>
+                  <TimeAgo timestamp={model.lastUsed} />
+                </td>
               </tr>
             ))}
           </tbody>
@@ -289,7 +294,7 @@ function RecentRequests({ requests = [], providerNameMap = {} }) {
             <tbody className="divide-y divide-border/50">
               {requests.map((r, i) => {
                 const errorInfo = getRequestErrorInfo(r);
-                const providerLabel = getProviderLabel(r.provider, providerNameMap);
+                const providerLabel = getProviderLabel(r.provider, providerNameMap, r.providerName);
                 return (
                   <tr
                     key={i}
@@ -525,14 +530,13 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       });
   }, [period]);
 
-  // SSE connection - real-time updates for activeRequests + recentRequests only
+  // SSE connection - real-time updates for activeRequests, recentRequests, and model/provider usage.
   useEffect(() => {
-    const es = new EventSource("/api/usage/stream");
+    const es = new EventSource(`/api/usage/stream?period=${encodeURIComponent(period)}`);
 
     es.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
-        // Always merge only real-time fields, never overwrite full stats from REST
         setStats((prev) => {
           if (!prev) return prev;
           return {
@@ -541,6 +545,8 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
             recentRequests: data.recentRequests,
             errorProvider: data.errorProvider,
             pending: data.pending,
+            ...(data.modelProviderUsage ? { modelProviderUsage: data.modelProviderUsage } : {}),
+            ...(data.errorCounts ? { errorCounts: data.errorCounts } : {}),
           };
         });
         if (hasLoadedStats.current) setLoading(false);
@@ -552,7 +558,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
     es.onerror = () => setLoading(false);
 
     return () => es.close();
-  }, []);
+  }, [period]);
 
   const toggleSort = useCallback((tableType, field) => {
     const params = new URLSearchParams(searchParams.toString());
