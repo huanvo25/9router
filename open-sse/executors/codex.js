@@ -33,7 +33,7 @@ const CODEX_PASSTHROUGH_TOOL_TYPES = new Set(["custom"]);
 const RESPONSES_API_ALLOWLIST = new Set([
   "model", "input", "instructions", "tools", "tool_choice", "stream", "store",
   "reasoning", "service_tier", "include", "prompt_cache_key", "client_metadata",
-  "text"
+  "text", "previous_response_id", "conversation"
 ]);
 
 // Convert role=system → role=developer in body.input (keeps content in cacheable prefix)
@@ -323,19 +323,29 @@ export class CodexExecutor extends BaseExecutor {
     convertSystemToDeveloperRole(body);
     // Strip server-generated item IDs (rs_/fc_/resp_/msg_) — Codex /responses can't resolve when store=false
     stripStoredItemReferences(body);
-    // Flatten function tools + drop unsupported types
-    normalizeCodexTools(body);
+    if (this._isCompact) {
+      // /responses/compact accepts a smaller JSON payload and returns JSON, not SSE.
+      delete body.stream;
+      delete body.store;
+      delete body.tools;
+      delete body.tool_choice;
+      delete body.parallel_tool_calls;
+      delete body.include;
+    } else {
+      // Flatten function tools + drop unsupported types
+      normalizeCodexTools(body);
 
-    // Ensure streaming is enabled (Codex API requires it)
-    body.stream = true;
+      // Ensure streaming is enabled (Codex API requires it)
+      body.stream = true;
+
+      // Ensure store is false (Codex requirement)
+      body.store = false;
+    }
 
     // If no instructions provided, inject default Codex instructions
     if (!body.instructions || body.instructions.trim() === "") {
       body.instructions = CODEX_DEFAULT_INSTRUCTIONS;
     }
-
-    // Ensure store is false (Codex requirement)
-    body.store = false;
 
     // Inject prompt_cache_key for stable Codex prompt caching
     if (credentials?.promptCacheEnabled !== false && !body.prompt_cache_key && this._currentSessionId) {
@@ -358,17 +368,20 @@ export class CodexExecutor extends BaseExecutor {
       }
     }
 
-    // Priority: explicit reasoning.effort > reasoning_effort param > model suffix > default (medium)
-    if (!body.reasoning) {
-      const effort = body.reasoning_effort || modelEffort || 'low';
-      body.reasoning = { effort, summary: "auto" };
-    } else if (!body.reasoning.summary) {
-      body.reasoning.summary = "auto";
+    // Priority: explicit reasoning.effort > reasoning_effort param > model suffix > default (medium).
+    // Compact calls preserve client-provided reasoning but don't inject extra thinking.
+    if (!this._isCompact) {
+      if (!body.reasoning) {
+        const effort = body.reasoning_effort || modelEffort || 'low';
+        body.reasoning = { effort, summary: "auto" };
+      } else if (!body.reasoning.summary) {
+        body.reasoning.summary = "auto";
+      }
     }
     delete body.reasoning_effort;
 
     // Include reasoning encrypted content (required by Codex backend for reasoning models)
-    if (body.reasoning && body.reasoning.effort && body.reasoning.effort !== 'none') {
+    if (!this._isCompact && body.reasoning && body.reasoning.effort && body.reasoning.effort !== 'none') {
       body.include = ["reasoning.encrypted_content"];
     }
 
@@ -389,7 +402,10 @@ export class CodexExecutor extends BaseExecutor {
     delete body.metadata; // Cursor sends this but Codex doesn't support it
     delete body.stream_options; // Cursor sends this but Codex doesn't support it
     delete body.safety_identifier; // Droid CLI sends this but Codex doesn't support it
-    delete body.previous_response_id; // store=false → backend can't resolve previous resp; avoid 404
+    if (!this._isCompact) {
+      delete body.previous_response_id; // store=false → backend can't resolve previous resp; avoid 404
+      delete body.conversation;
+    }
 
     // Final allowlist filter — strip any unknown field that could trigger upstream "routing_unsupported"
     for (const k of Object.keys(body)) {

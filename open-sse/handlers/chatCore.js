@@ -27,6 +27,7 @@ import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
 import { isPromptCacheEnabled, stripPromptCacheHints } from "../utils/promptCacheControl.js";
+import { buildResponsesCompactBody, buildSyntheticCompactionSseStream, stripTerminalCompactionTriggerInput } from "../services/responsesCompact.js";
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -158,6 +159,22 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     translatedBody.messages = translatedBody.messages.filter(msg => msg.role !== "tool");
     delete translatedBody.tools;
   }
+
+  // Codex Responses API auto-compaction: Codex CLI sends a terminal
+  // `{type:"compaction_trigger"}` item to /responses.  Convert that request into
+  // a compact endpoint call and synthesize the tiny Responses SSE stream below.
+  let compactTriggeredByInput = false;
+  try {
+    const compactTriggerInput = stripTerminalCompactionTriggerInput(translatedBody);
+    compactTriggeredByInput = compactTriggerInput !== null;
+    if (compactTriggeredByInput || translatedBody._compact === true) {
+      translatedBody = buildResponsesCompactBody(translatedBody, compactTriggerInput);
+    }
+  } catch (error) {
+    trackPendingRequest(model, provider, connectionId, false, true);
+    return createErrorResult(HTTP_STATUS.BAD_REQUEST, error.message || "Invalid compaction_trigger");
+  }
+  const outboundIsCompact = translatedBody._compact === true;
 
   // RTK: compress tool_result content
   const rtkStats = compressMessages(translatedBody, rtkEnabled);
@@ -319,6 +336,47 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false);
+
+  // Compact endpoint responses are JSON even though Codex provider normally forces SSE.
+  // For terminal compaction_trigger requests, Codex CLI expects a Responses SSE stream
+  // containing exactly one `compaction` output item.
+  if (outboundIsCompact) {
+    trackDone();
+    try {
+      const compactPayload = await providerResponse.json();
+      if (onRequestSuccess) await onRequestSuccess();
+      appendLog({ tokens: compactPayload?.usage || {}, status: "200 OK" });
+
+      if (compactTriggeredByInput) {
+        const compactStream = buildSyntheticCompactionSseStream(compactPayload);
+        if (!compactStream) {
+          return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Compact response did not include a compaction output item");
+        }
+        return {
+          success: true,
+          response: new Response(compactStream, {
+            status: 200,
+            headers: {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache, no-transform",
+              "Connection": "keep-alive",
+              "Access-Control-Allow-Origin": "*"
+            }
+          })
+        };
+      }
+
+      return {
+        success: true,
+        response: new Response(JSON.stringify(compactPayload), {
+          status: 200,
+          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+        })
+      };
+    } catch (error) {
+      return createErrorResult(HTTP_STATUS.BAD_GATEWAY, `Failed to parse compact response: ${error.message}`);
+    }
+  }
 
   // Provider forced streaming but client wants JSON
   if (!clientRequestedStreaming && providerRequiresStreaming) {

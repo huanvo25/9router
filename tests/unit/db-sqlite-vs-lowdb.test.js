@@ -201,6 +201,55 @@ describe("DB SQLite layer — public API parity", () => {
     expect(stats.byProvider.openai.promptTokens).toBeGreaterThanOrEqual(300);
   });
 
+  it("usage: today uses UTC+7 calendar day while 24h stays rolling", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-07-07T18:00:00.000Z")); // 01:00 08/07/2026 UTC+7
+      const provider = "tz-period-test-provider";
+
+      await sqliteDb.saveRequestUsage({
+        timestamp: "2026-07-07T16:30:00.000Z", // 23:30 07/07 UTC+7
+        provider, model: "tz-prev-vn-day", connectionId: "tz-c1",
+        tokens: { prompt_tokens: 0, completion_tokens: 10 },
+        endpoint: "/v1/chat/completions", status: "ok",
+      });
+      await sqliteDb.saveRequestUsage({
+        timestamp: "2026-07-07T17:00:00.000Z", // 00:00 08/07 UTC+7
+        provider, model: "tz-today-start", connectionId: "tz-c1",
+        tokens: { prompt_tokens: 30, completion_tokens: 10 },
+        endpoint: "/v1/chat/completions", status: "ok",
+      });
+      await sqliteDb.saveRequestUsage({
+        timestamp: "2026-07-07T17:30:00.000Z", // 00:30 08/07 UTC+7
+        provider, model: "tz-today-zero-output", connectionId: "tz-c1",
+        tokens: { prompt_tokens: 40, completion_tokens: 0 },
+        endpoint: "/v1/chat/completions", status: "ok",
+      });
+
+      const today = await sqliteDb.getUsageStats("today");
+      const rolling24h = await sqliteDb.getUsageStats("24h");
+
+      expect(today.byProvider[provider]?.requests).toBe(2);
+      expect(rolling24h.byProvider[provider]?.requests).toBe(3);
+      expect(today.byModel["tz-prev-vn-day (tz-period-test-provider)"]).toBeUndefined();
+      expect(rolling24h.byModel["tz-prev-vn-day (tz-period-test-provider)"]?.requests).toBe(1);
+
+      const errorCounts = Object.fromEntries(today.errorCounts.map((item) => [item.key, item]));
+      const todayProviderErrors = errorCounts.today.providers.find((item) => item.provider === provider);
+      const rollingProviderErrors = errorCounts["24h"].providers.find((item) => item.provider === provider);
+      expect(todayProviderErrors).toMatchObject({ count: 1, zeroTokenCount: 1 });
+      expect(rollingProviderErrors).toMatchObject({ count: 2, zeroTokenCount: 2 });
+
+      const todayChart = await sqliteDb.getChartData("today");
+      expect(todayChart).toHaveLength(24);
+      expect(todayChart[0]).toMatchObject({ label: "00:00", tokens: 80 });
+      expect(todayChart[1].label).toBe("01:00");
+    } finally {
+      vi.runOnlyPendingTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("usage: model/provider rows keep separate error rates for the same model", async () => {
     const model = "gpt-5.5-split-test";
     await sqliteDb.saveRequestUsage({
