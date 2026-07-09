@@ -13,6 +13,16 @@ import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM } from "../schema/index.js";
 const MAX_CALL_ID_LEN = 64;
 const clampCallId = (id) => (typeof id === "string" && id.length > MAX_CALL_ID_LEN ? id.substring(0, MAX_CALL_ID_LEN) : id);
 
+function stringifyToolArguments(value) {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return "{}";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
 /**
  * Convert OpenAI Responses API request to OpenAI Chat Completions format
  */
@@ -73,11 +83,13 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
           if (c.type === RESPONSES_ITEM.INPUT_TEXT) return { type: OPENAI_BLOCK.TEXT, text: c.text };
           if (c.type === RESPONSES_ITEM.OUTPUT_TEXT) return { type: OPENAI_BLOCK.TEXT, text: c.text };
           if (c.type === RESPONSES_ITEM.INPUT_IMAGE) {
-            const url = c.image_url || c.file_id || "";
-            return { type: OPENAI_BLOCK.IMAGE_URL, image_url: { url, detail: c.detail || "auto" } };
+            const url = typeof c.image_url === "string" ? c.image_url : c.image_url?.url;
+            if (url) return { type: OPENAI_BLOCK.IMAGE_URL, image_url: { url, detail: c.detail || "auto" } };
+            if (c.file_id) return { type: OPENAI_BLOCK.TEXT, text: `[Attached image file: ${c.file_id}]` };
+            return null;
           }
           return c;
-        })
+        }).filter(Boolean)
         : item.content;
       const msg = { role: item.role, content };
       // Attach buffered reasoning to assistant turn (required by xiaomi-mimo thinking mode)
@@ -88,6 +100,9 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
       result.messages.push(msg);
     }
     else if (itemType === RESPONSES_ITEM.FUNCTION_CALL) {
+      // Skip items with empty/missing name — Codex/OpenAI reject nameless tool calls (#444)
+      if (!item.name || typeof item.name !== "string" || item.name.trim() === "") continue;
+
       // Start or append to assistant message with tool_calls
       if (!currentAssistantMsg) {
         currentAssistantMsg = {
@@ -100,14 +115,12 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
           pendingReasoning = "";
         }
       }
-      // Skip items with empty/missing name — Codex/OpenAI reject nameless tool calls (#444)
-      if (!item.name || typeof item.name !== "string" || item.name.trim() === "") continue;
       currentAssistantMsg.tool_calls.push({
-        id: item.call_id,
+        id: clampCallId(item.call_id),
         type: OPENAI_BLOCK.FUNCTION,
         function: {
           name: item.name,
-          arguments: item.arguments
+          arguments: stringifyToolArguments(item.arguments)
         }
       });
     }
@@ -140,7 +153,7 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
   }
 
   // Flush remaining
-  if (currentAssistantMsg) {
+  if (currentAssistantMsg && currentAssistantMsg.tool_calls?.length > 0) {
     result.messages.push(currentAssistantMsg);
   }
   if (pendingToolResults.length > 0) {
@@ -271,7 +284,7 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
           type: RESPONSES_ITEM.FUNCTION_CALL,
           call_id: clampCallId(tc.id),
           name: tc.function?.name || "_unknown",
-          arguments: tc.function?.arguments || "{}"
+          arguments: stringifyToolArguments(tc.function?.arguments)
         });
       }
     }

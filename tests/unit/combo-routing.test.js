@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
 
-import { getRotatedModels, resetComboRotation } from "../../open-sse/services/combo.js";
+import { getRotatedModels, handleComboChat, resetComboRotation } from "../../open-sse/services/combo.js";
+
+const log = { info: () => {}, warn: () => {}, debug: () => {} };
 
 describe("combo round-robin routing", () => {
   beforeEach(() => {
@@ -54,5 +56,32 @@ describe("combo round-robin routing", () => {
 
     expect(getRotatedModels(models, "code-xhigh", "fallback", 2)).toEqual(models);
     expect(getRotatedModels(models, "code-xhigh", "fallback", 2)).toEqual(models);
+  });
+
+  it("falls through to the next model when the first combo model fails", async () => {
+    const calls = [];
+    const response = await handleComboChat({
+      body: { messages: [{ role: "user", content: "hi" }] },
+      models: ["provider/model-a", "provider/model-b"],
+      handleSingleModel: async (_body, model) => {
+        calls.push(model);
+        if (model === "provider/model-a") {
+          return new Response(JSON.stringify({ error: { message: "upstream bad" } }), {
+            status: 502,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+      log,
+      comboName: "code-fallback",
+      comboStrategy: "fallback",
+    });
+
+    expect(response.ok).toBe(true);
+    expect(calls).toEqual(["provider/model-a", "provider/model-b"]);
   });
 });

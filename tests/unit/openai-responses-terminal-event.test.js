@@ -38,6 +38,45 @@ async function runTransform(input) {
 }
 
 describe("OpenAI Responses streaming termination", () => {
+  it("drops Codex vendor events and backfills completed output from streamed items", async () => {
+    const output = await runTransform([
+      `event: codex.rate_limits`,
+      `data: ${JSON.stringify({ type: "codex.rate_limits", rate_limits: { allowed: true } })}`,
+      "",
+      `event: response.created`,
+      `data: ${JSON.stringify({ type: "response.created", response: { id: "resp_test", status: "in_progress", output: [] } })}`,
+      "",
+      `event: response.output_item.done`,
+      `data: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item: { id: "msg_1", type: "message", role: "assistant", content: [{ type: "output_text", text: "hello from stream" }] } })}`,
+      "",
+      `event: response.completed`,
+      `data: ${JSON.stringify({ type: "response.completed", response: { id: "resp_test", status: "completed", output: [] } })}`,
+      "",
+    ].join("\n"));
+
+    expect(output).not.toContain("codex.rate_limits");
+    expect(output).toContain("event: response.completed");
+    expect(output).toContain("hello from stream");
+    expect(output).toContain('"output":[{"id":"msg_1"');
+    expect(output).toContain("data: [DONE]");
+  });
+
+  it("synthesizes response.created before response.failed when upstream rejects early", async () => {
+    const output = await runTransform([
+      `event: codex.rate_limits`,
+      `data: ${JSON.stringify({ type: "codex.rate_limits", rate_limits: { allowed: true } })}`,
+      "",
+      `event: response.failed`,
+      `data: ${JSON.stringify({ type: "response.failed", response: { id: "resp_err", status: "failed", error: { message: "nope" } } })}`,
+      "",
+    ].join("\n"));
+
+    expect(output).not.toContain("codex.rate_limits");
+    expect(output.indexOf("event: response.created")).toBeLessThan(output.indexOf("event: response.failed"));
+    expect(output).toContain('"id":"resp_err"');
+    expect(output).toContain("data: [DONE]");
+  });
+
   it("emits a response.failed event when a Responses stream closes before a terminal event", async () => {
     const output = await runTransform([
       `event: response.created`,

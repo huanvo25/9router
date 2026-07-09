@@ -3,7 +3,13 @@ import { FORMATS } from "../translator/formats.js";
 import { trackPendingRequest, appendRequestLog } from "@/lib/usageDb.js";
 import { extractUsage, hasValidUsage, estimateUsage, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./streamHelpers.js";
-import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
+import {
+  createOpenAIResponsesPublicNormalizerState,
+  flushOpenAIResponsesPublicNormalizer,
+  getOpenAIResponsesEventName,
+  isOpenAIResponsesTerminalEvent,
+  normalizeOpenAIResponsesPublicEvent
+} from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 
 import { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER } from "./sseConstants.js";
@@ -105,6 +111,7 @@ export function createSSEStream(options = {}) {
   let openAIResponsesTerminalSeen = false;
   let openAIResponsesDoneSent = false;
   let streamDoneSent = false;  // track duplicate [DONE] across transform + flush
+  const openAIResponsesPublicNormalizer = createOpenAIResponsesPublicNormalizerState();
 
   return new TransformStream({
     transform(chunk, controller) {
@@ -238,7 +245,7 @@ export function createSSEStream(options = {}) {
           ? getOpenAIResponsesEventName(currentOpenAIResponsesEvent, parsed)
           : null;
 
-        if (isOpenAIResponsesStream && isOpenAIResponsesTerminalEvent(openAIResponsesEventName, parsed)) {
+        if (!keepsOpenAIResponsesFormat && isOpenAIResponsesStream && isOpenAIResponsesTerminalEvent(openAIResponsesEventName, parsed)) {
           openAIResponsesTerminalSeen = true;
         }
 
@@ -247,11 +254,14 @@ export function createSSEStream(options = {}) {
         if (parsed && parsed.done && targetFormat !== FORMATS.OLLAMA) {
           // Synthesize response.failed if the Responses stream never sent a terminal event
           if (keepsOpenAIResponsesFormat && !openAIResponsesTerminalSeen) {
-            const failedOutput = formatIncompleteOpenAIResponsesStreamFailure();
-            reqLogger?.appendConvertedChunk?.(failedOutput);
-            controller.enqueue(sharedEncoder.encode(failedOutput));
+            const failedEvents = flushOpenAIResponsesPublicNormalizer(openAIResponsesPublicNormalizer);
+            for (const eventPayload of failedEvents) {
+              const failedOutput = formatSSE({ event: eventPayload.type, data: eventPayload }, sourceFormat);
+              reqLogger?.appendConvertedChunk?.(failedOutput);
+              controller.enqueue(sharedEncoder.encode(failedOutput));
+              sseEmittedCount++;
+            }
             openAIResponsesTerminalSeen = true;
-            sseEmittedCount++;
           }
 
           if (keepsOpenAIResponsesFormat && !streamDoneSent) {
@@ -305,13 +315,20 @@ export function createSSEStream(options = {}) {
         const extracted = extractUsage(parsed);
         if (extracted) state.usage = extracted; // Keep original usage for logging
 
-        // Responses same-format passthrough: re-emit with original event framing
+        // Responses same-format public passthrough: normalize Codex-lb-style
+        // public contract details before re-emitting.
         if (keepsOpenAIResponsesFormat && openAIResponsesEventName) {
-          const output = formatSSE({ event: openAIResponsesEventName, data: parsed }, sourceFormat);
-          reqLogger?.appendConvertedChunk?.(output);
-          controller.enqueue(sharedEncoder.encode(output));
+          const normalizedPayloads = normalizeOpenAIResponsesPublicEvent(openAIResponsesEventName, parsed, openAIResponsesPublicNormalizer);
+          for (const payload of normalizedPayloads) {
+            const output = formatSSE({ event: payload.type || openAIResponsesEventName, data: payload }, sourceFormat);
+            reqLogger?.appendConvertedChunk?.(output);
+            controller.enqueue(sharedEncoder.encode(output));
+            sseEmittedCount++;
+            if (isOpenAIResponsesTerminalEvent(payload.type, payload)) {
+              openAIResponsesTerminalSeen = true;
+            }
+          }
           currentOpenAIResponsesEvent = null;
-          sseEmittedCount++;
           continue;
         }
 
@@ -450,9 +467,12 @@ export function createSSEStream(options = {}) {
         // Synthesize response.failed if a Responses passthrough stream never reached a terminal event
         const keepsOpenAIResponsesFormat = targetFormat === FORMATS.OPENAI_RESPONSES && sourceFormat === FORMATS.OPENAI_RESPONSES;
         if (keepsOpenAIResponsesFormat && !openAIResponsesTerminalSeen) {
-          const failedOutput = formatIncompleteOpenAIResponsesStreamFailure();
-          reqLogger?.appendConvertedChunk?.(failedOutput);
-          controller.enqueue(sharedEncoder.encode(failedOutput));
+          const failedEvents = flushOpenAIResponsesPublicNormalizer(openAIResponsesPublicNormalizer);
+          for (const eventPayload of failedEvents) {
+            const failedOutput = formatSSE({ event: eventPayload.type, data: eventPayload }, sourceFormat);
+            reqLogger?.appendConvertedChunk?.(failedOutput);
+            controller.enqueue(sharedEncoder.encode(failedOutput));
+          }
           openAIResponsesTerminalSeen = true;
         }
 
